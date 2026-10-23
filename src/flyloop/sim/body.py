@@ -3,7 +3,7 @@
 Every body exposes the same small interface, so the eyes, vision, LPTC layer and
 controller never depend on which body is used:
 
-    body.reset()
+    body.reset(position, heading_deg)
     body.step(command, dt, disturbance)   # (3,) roll, pitch, yaw
     body.orientation                      # (3, 3) body -> world rotation
     body.position                         # (3,) world frame
@@ -33,7 +33,7 @@ class Body(ABC):
     omega: np.ndarray
 
     @abstractmethod
-    def reset(self) -> None: ...
+    def reset(self, position=None, heading_deg: float = 0.0) -> None: ...
 
     @abstractmethod
     def step(self, command: np.ndarray, dt: float,
@@ -62,8 +62,9 @@ class KinematicBody(Body):
             of ms; 0.05 s is a placeholder to be checked against measurements.
         max_command_deg_s: Saturation of the steering command.
         forward_speed: Constant speed along the body x axis (world units/s).
-            Drums and spheres are at infinity, so translation only matters for
-            later corridor worlds.
+            Drums and spheres are at infinity, so translation only matters in
+            worlds at finite distance (Corridor). Turning therefore also steers
+            the direction of travel (no sideslip).
         free_axes: Axes the body may rotate about; the others are held fixed.
     """
 
@@ -78,9 +79,9 @@ class KinematicBody(Body):
         self.free = np.array([a in free_axes for a in AXES], float)
         self.reset()
 
-    def reset(self) -> None:
-        self.orientation = np.eye(3)
-        self.position = np.zeros(3)
+    def reset(self, position=None, heading_deg: float = 0.0) -> None:
+        self.orientation = rotation_matrix([0.0, 0.0, 1.0], heading_deg)
+        self.position = np.zeros(3) if position is None else np.asarray(position, float).copy()
         self.omega = np.zeros(3)
         self.angle_deg = np.zeros(3)  # integral of body-frame omega
 

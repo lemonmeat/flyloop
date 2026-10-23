@@ -43,7 +43,8 @@ class VisualRig:
         return self.lptc.cells
 
     def reset(self, world, heading_deg: float = 0.0, t_settle: float = 0.5,
-              orientation: np.ndarray | None = None) -> RigOutput | None:
+              orientation: np.ndarray | None = None,
+              position: np.ndarray | None = None) -> RigOutput | None:
         """Grey steady state, then t_settle seconds of the static scene so the
         network has adapted to it before anything moves. Returns the settling
         output (None if t_settle is 0)."""
@@ -51,14 +52,15 @@ class VisualRig:
         self.state = {"vision": vis, "lptc": self.lptc.init_state(len(EYE_ORDER))}
         n = int(round(t_settle / self.dt))
         if n:
-            frame = self.eyes.sample(world, heading_deg, orientation)
+            frame = self.eyes.sample(world, heading_deg, orientation, position)
             return self.step_frames(np.repeat(frame[:, None], n, axis=1))
         return None
 
-    def step(self, world, heading_deg: float = 0.0,
-             orientation: np.ndarray | None = None) -> RigOutput:
+    def step(self, world, heading_deg: float = 0.0, orientation: np.ndarray | None = None,
+             position: np.ndarray | None = None) -> RigOutput:
         """Render one frame at the current world state and advance by dt."""
-        return self.step_frames(self.eyes.sample(world, heading_deg, orientation)[:, None])
+        frame = self.eyes.sample(world, heading_deg, orientation, position)
+        return self.step_frames(frame[:, None])
 
     @torch.no_grad()
     def step_frames(self, frames: np.ndarray) -> RigOutput:
