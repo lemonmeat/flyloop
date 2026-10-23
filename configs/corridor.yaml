@@ -1,0 +1,65 @@
+# Corridor centering: forward flight down a textured corridor, steering by yaw only.
+# Run: python scripts/run_corridor.py [key=value ...]
+
+sweep: corridor
+index: 0
+seed: 0
+out_root: ${oc.env:FLYLOOP_RUNS,runs}
+
+model: flow/0000/000
+dt: 0.01
+
+eyes:
+  axis_azimuth_deg: 80.0
+  n_sub: 3
+
+lptc:
+  source: connectome
+  tau_lptc: 0.01
+  tau_lpi: 0.01
+
+corridor:              # width 1; flow at a wall scales as speed / distance
+  pattern: checker     # checker (random squares) or texture (1/f^alpha)
+  square: 0.1
+  alpha: 1.0
+  contrast: 1.0
+  length: 8.0
+  train_seed: 0        # wall textures used for calibration
+  test_seed: 1         # unseen wall textures used for every closed-loop trial
+
+speed: 0.5             # corridor widths per s (wall flow at centre ~57 deg/s)
+body_tau_s: 0.05
+collision_margin: 0.03 # crash when |y| > 0.5 - margin
+
+sysid:                 # open-loop trajectories for the fitted (vision-only) readout
+  n_train: 48
+  n_test: 12
+  t_traj: 3.0
+  t_skip: 0.5
+  max_amplitude_deg: 40.0
+  filter_taus_s: [0.1, 0.5]
+  ridge: 0.001
+
+controllers:
+  optomotor: {kp: 5.0, kd: 1.0}                    # PD on HS yaw estimate (as closedloop)
+  readout: {kd: 0.5, kc: 150.0, kh: 5.0, ki: 0.0, filter_tau_s: 0.1}
+  efference: {kc: 150.0, kh: 3.0, heading: visual, filter_tau_s: 0.5}
+
+starts:                # (lateral offset, heading deg) when the loop closes
+  - [0.25, 0.0]
+  - [-0.25, 0.0]
+  - [0.0, 30.0]
+  - [0.0, -30.0]
+torque_deg_s: 20.0     # yaw torque trials (start centred)
+t_run: 12.0
+t_settle: 1.0
+t_score: 4.0
+
+sweep_list: []
+
+hydra:
+  run:
+    dir: ${out_root}/${sweep}/${index}_${seed}
+  output_subdir: .hydra
+  job:
+    chdir: false

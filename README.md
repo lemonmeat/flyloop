@@ -51,6 +51,7 @@ make tuning                     # open-loop T4/T5 tuning -> runs/openloop_tuning
 make tuning ARGS="model.name=flow/0000/001 index=1"
 make bench                      # speed benchmark -> runs/benchmark_speed/0_0/
 make closedloop                 # torque/silencing/optomotor trials -> runs/closedloop/0_0/
+make corridor                   # corridor centering -> runs/corridor/0_0/
 ```
 
 The closed loop (`flyloop.sim.ClosedLoop`) runs world -> eyes -> flyvis -> LPTC ->
@@ -58,6 +59,9 @@ The closed loop (`flyloop.sim.ClosedLoop`) runs world -> eyes -> flyvis -> LPTC 
 `flyloop.sim.Body` (`reset`, `step(command, dt, disturbance)`, `orientation`,
 `position`); `KinematicBody` is first-order rotation about roll, pitch and yaw
 with torques in deg/s units. A flybody body would implement the same interface.
+`Corridor` is a world at finite distance (eyes cast rays from the body position);
+`EfferenceCentering` steers down it from HS plus an efference copy of the fly's
+own turns, and `LinearReadout` fits vision-only readouts of HS/VS.
 
 Every run writes `runs/<sweep>/<index>_<seed>/` with the resolved `config.yaml`,
 `meta.json` (git commit, dirty flag, host, timings), CSV metrics and PNG plots.
