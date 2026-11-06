@@ -9,6 +9,13 @@ from flyloop.perturb import set_t4t5_output, t4t5_output
 from flyloop.sim import PITCH_AXIS, ROLL_AXIS, YAW_AXIS, KinematicBody, SphereWorld
 
 
+def _connectome_weights() -> LPTCWeights:
+    try:
+        return LPTCWeights.from_connectome()
+    except FileNotFoundError as e:  # neuPrint cache not fetched on this machine
+        pytest.skip(str(e))
+
+
 @pytest.fixture(scope="module")
 def eyes():
     return Eyes(n_sub=1)
@@ -60,7 +67,7 @@ def test_pd_controller_is_pd_on_integrated_estimate():
 
 
 def test_decoder_yaw_template_is_hs_left_minus_right(eyes):
-    w = LPTCWeights.from_connectome()
+    w = _connectome_weights()
     dec = RotationDecoder(w, eyes)
     yaw = dec.templates[2]
     hs = w.index("HS")
@@ -73,10 +80,10 @@ def test_decoder_yaw_template_is_hs_left_minus_right(eyes):
 def test_t4t5_silencing_hook():
     layer = LPTCLayer(LPTCWeights.simple(), 0.01)
     set_t4t5_output(layer, "T4_only")
-    np.testing.assert_allclose(layer.subtype_gain.numpy(), [1, 1, 1, 1, 0, 0, 0, 0])
+    np.testing.assert_allclose(layer.subtype_gain.cpu().numpy(), [1, 1, 1, 1, 0, 0, 0, 0])
     with t4t5_output(layer, "silenced"):
         assert layer.subtype_gain.sum() == 0
-    np.testing.assert_allclose(layer.subtype_gain.numpy(), [1, 1, 1, 1, 0, 0, 0, 0])
+    np.testing.assert_allclose(layer.subtype_gain.cpu().numpy(), [1, 1, 1, 1, 0, 0, 0, 0])
     with pytest.raises(ValueError):
         set_t4t5_output(layer, ["T6a"])
 
@@ -89,7 +96,7 @@ def test_closed_loop_compensates_yaw_torque_only_with_t4t5():
 
     dt = 0.01
     eyes = Eyes(n_sub=2)
-    w = LPTCWeights.from_connectome()
+    w = _connectome_weights()
     rig = VisualRig(eyes, FlyvisModel(dt=dt), LPTCLayer(w, dt))
     dec = RotationDecoder(w, eyes)
     world = lambda: SphereWorld.checkerboard(20)  # noqa: E731

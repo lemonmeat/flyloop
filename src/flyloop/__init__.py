@@ -27,3 +27,8 @@ if "flyvis" in sys.modules and Path(sys.modules["flyvis"].root_dir) != FLYVIS_RO
         "former. Import flyloop first or export FLYVIS_ROOT_DIR.",
         stacklevel=2,
     )
+
+if sys.platform == "win32":
+    from ._compat import patch_datamate
+
+    patch_datamate()

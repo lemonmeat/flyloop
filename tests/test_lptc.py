@@ -13,7 +13,7 @@ def _drive(layer, active: list[str], value=1.0, n_frames=200):
     for s in active:
         x[:, :, SUB[s]] = value
     v, _ = layer.step(x, layer.init_state(1))
-    return v[0, -1].numpy()
+    return v[0, -1].cpu().numpy()
 
 
 def test_simple_hs_is_opponent():

@@ -22,8 +22,8 @@ def test_readout_matches_flyvis_layer_activity(model):
     assert r.central.shape == (1, stim.n_frames, 8)
     la = LayerActivity(torch.tensor(r.activity), model.network.connectome, keepref=True)
     for i, ct in enumerate(r.cell_types):
-        np.testing.assert_allclose(la.central[ct].numpy(), r.central[..., i])
-        np.testing.assert_allclose(la[ct].numpy().mean(-1), r.mean[..., i], atol=1e-6)
+        np.testing.assert_allclose(la.central[ct].cpu().numpy(), r.central[..., i])
+        np.testing.assert_allclose(la[ct].cpu().numpy().mean(-1), r.mean[..., i], atol=1e-6)
 
 
 def test_step_reproduces_simulate(model):
