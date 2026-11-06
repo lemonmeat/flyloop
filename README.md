@@ -18,6 +18,7 @@ src/flyloop/
   connectome/  neuPrint optic-lobe:v1.1 loaders, column alignment
   perturb/     T4/T5 silencing (noise, tau scaling later)
   metrics/     DSI, preferred direction, behavioral metrics
+tasks.py       setup, tests, experiments, Adroit submit/pull (any OS; Makefile wraps it)
 configs/       Hydra configs, one per experiment
 scripts/       entry points
 slurm/         Adroit job templates
@@ -28,31 +29,56 @@ runs/          outputs (gitignored)
 
 ## Setup
 
+Every task runs through `tasks.py`, which needs only a Python 3 to start (any
+version; it builds the project's own Python 3.10). The same commands work on macOS,
+Windows and Linux. On macOS/Linux `make <target>` is a shortcut for
+`python tasks.py <target>`.
+
 ```bash
-make env     # create the env and download the pretrained flyvis ensemble
-make test
+python tasks.py env          # .venv (Python 3.10) + pretrained flyvis ensemble
+python tasks.py connectome   # neuPrint optic-lobe:v1.1 cache (needs .env, below)
+python tasks.py test
 ```
 
-On the Mac, `make env` builds a uv venv in `.venv` (Python 3.10). Where uv is
-missing (Adroit), it builds the conda env from `environment.yml`, which you must
-activate first (`conda activate flyloop`). Pretrained models land in
-`data/flyvis` (gitignored); `flyloop` sets `FLYVIS_ROOT_DIR` there unless you
-export your own.
+`env` installs uv with pip if it is missing, builds `.venv` with Python 3.10
+(uv downloads it), installs `flyloop` editable and downloads the pretrained models
+to `data/flyvis` (gitignored; `flyloop` sets `FLYVIS_ROOT_DIR` there unless you
+export your own). It is safe to rerun. On Windows with an NVIDIA GPU it installs
+the CUDA build of torch (PyPI's Windows wheels are CPU-only). On Adroit, where uv
+is absent and conda present, it builds the conda env from `environment.yml`
+instead; activate it (`conda activate flyloop`) before running anything else.
 
-flyvis picks its device at import (`cuda` if available, else `cpu`). Apple MPS
-does not work with flyvis 1.2.0: network initialization creates float64 tensors,
-which MPS does not support, and moving a CPU-built network leaves flyvis's internal
-index tensors on the CPU. On the Mac flyvis runs on CPU.
+The connectome weights come from neuPrint and are cached in `data/connectome`
+(gitignored), so each new machine fetches them once. Put your token
+(neuprint.janelia.org > Account) in `.env` at the repo root, which is gitignored:
+
+```
+NEUPRINT_APPLICATION_CREDENTIALS=<token>
+```
+
+Without the cache, tests that need it are skipped and experiments can run with
+`lptc.source=simple`.
+
+Devices: flyvis picks `cuda` if available at import, else `cpu`. Apple MPS does
+not work with flyvis 1.2.0 (network initialization creates float64 tensors, which
+MPS does not support, and moving a CPU-built network leaves flyvis's internal index
+tensors on the CPU), so on the Mac flyvis runs on CPU. On Windows `flyloop` patches
+a file-locking bug in datamate 1.0.0 (flyvis's cache library) at import; see
+`src/flyloop/_compat.py`. Import `flyloop` before `flyvis`.
 
 ## Running experiments
 
 ```bash
-make tuning                     # open-loop T4/T5 tuning -> runs/openloop_tuning/0_0/
-make tuning ARGS="model.name=flow/0000/001 index=1"
-make bench                      # speed benchmark -> runs/benchmark_speed/0_0/
-make closedloop                 # torque/silencing/optomotor trials -> runs/closedloop/0_0/
-make corridor                   # corridor centering -> runs/corridor/0_0/
+python tasks.py tuning                    # open-loop T4/T5 tuning -> runs/openloop_tuning/0_0/
+python tasks.py tuning model.name=flow/0000/001 index=1
+python tasks.py bench                     # speed benchmark -> runs/benchmark_speed/0_0/
+python tasks.py closedloop                # torque/silencing/optomotor -> runs/closedloop/0_0/
+python tasks.py corridor                  # corridor centering -> runs/corridor/0_0/
+python tasks.py run vs_tuning             # any scripts/run_<name>.py or scripts/<name>.py
 ```
+
+Arguments after the task name are Hydra overrides (pytest arguments for `test`).
+With make: `make corridor ARGS="speed=1.0"`.
 
 The closed loop (`flyloop.sim.ClosedLoop`) runs world -> eyes -> flyvis -> LPTC ->
 `RotationDecoder` -> `PDController` -> body each dt. Bodies implement
@@ -86,8 +112,12 @@ Host adroit
     ControlPersist 10h
 ```
 
-Open the master connection once with `ssh adroit` (approve Duo); `make submit`
-and `make pull` then reuse it for 10 hours. `ssh -O exit adroit` closes it.
+Open the master connection once with `ssh adroit` (approve Duo); `submit`, `pull`,
+`status` and `logs` then reuse it for 10 hours. `ssh -O exit adroit` closes it.
+
+On Windows (`C:\Users\<you>\.ssh\config`) leave out the three `Control*` lines:
+Windows OpenSSH does not support connection sharing and fails with them. Each
+`tasks.py` call that reaches Adroit then asks for Duo once.
 
 ### One-time setup on the Adroit login node
 
@@ -95,15 +125,15 @@ and `make pull` then reuse it for 10 hours. `ssh -O exit adroit` closes it.
 git clone <github-url> ~/cos597z && cd ~/cos597z
 module avail anaconda3                 # we use 2026.7; keep slurm/array_template.slurm in sync
 module load anaconda3/2026.7
-conda env create -f environment.yml    # PyPI torch on Linux ships with CUDA
+python tasks.py env                    # conda env from environment.yml (PyPI torch on Linux has CUDA)
 conda activate flyloop
-FLYVIS_ROOT_DIR=$PWD/data/flyvis flyvis download-pretrained   # login node: compute nodes may lack internet
+python tasks.py models                 # login node: compute nodes may lack internet
+python tasks.py connectome             # login node; needs .env with the neuPrint token
 mkdir -p /scratch/network/$USER/flyvis-closedloop/{runs,logs}
 ```
 
-`flyloop` points `FLYVIS_ROOT_DIR` at `~/cos597z/data/flyvis` unless it is set.
-The `flyvis` CLI does not import `flyloop`, so the download needs that variable
-set explicitly as above.
+`flyloop` points `FLYVIS_ROOT_DIR` at `~/cos597z/data/flyvis` unless it is set;
+`tasks.py models` sets it for the `flyvis` CLI, which does not import `flyloop`.
 
 ### Submitting and collecting
 
@@ -111,31 +141,39 @@ Prefer batch jobs to `salloc`: submit, walk away, and Slurm emails you when the
 job (or the whole array) starts, ends or fails.
 
 ```bash
-make submit SWEEP=openloop_tuning              # git push, ssh adroit: git pull + sbatch
-make submit SWEEP=openloop_tuning RES=cpu ARRAY=0-3 ARGS="model.dt=0.01"
-make submit SWEEP=benchmark_speed RES=a100 TIME=00:20:00 ARGS="--devices cpu cuda" \
-     SBATCH_ARGS="--cpus-per-task=12"
-make status                                    # queue + last day's jobs
-make logs                                      # tail the newest log (or LOG=<file>)
-make pull                                      # rsync *.csv, *.json, *.png into runs/
+python tasks.py submit openloop_tuning           # git push, ssh adroit: git pull + sbatch
+python tasks.py submit openloop_tuning --res cpu --array 0-3 model.dt=0.01
+python tasks.py submit corridor --res cpu --time 02:00:00 --dry-run   # print, don't send
+python tasks.py submit closedloop --sbatch-args="--cpus-per-task=12"
+python tasks.py status                           # queue + last day's jobs
+python tasks.py logs                             # tail the newest log (or --log <file>)
+python tasks.py pull                             # *.csv, *.json, *.png into runs/
+python tasks.py pull --sweep corridor            # just one sweep
 ```
 
-`make submit SWEEP=<name>` runs `scripts/run_<name>.py` (or `scripts/<name>.py`)
-through `slurm/array_template.slurm`. With `configs/<name>.yaml` there is one array
-index per `sweep_list` entry; otherwise a single job. It refuses to submit with
-uncommitted changes.
+With make: `make submit SWEEP=openloop_tuning RES=cpu ARRAY=0-3 ARGS="model.dt=0.01"
+SBATCH_ARGS="--cpus-per-task=12"`, `make logs LOG=<file>`, `make pull SWEEP=corridor`.
 
-Resources: `RES` picks a preset and `TIME` the wall-time limit (default 1 h).
+`submit <name>` runs `scripts/run_<name>.py` (or `scripts/<name>.py`) through
+`slurm/array_template.slurm`. With `configs/<name>.yaml` there is one array index
+per `sweep_list` entry; otherwise a single job. It refuses to submit with
+uncommitted changes. Arguments that are not options are Hydra overrides.
+
+`pull` uses rsync where it exists (incremental; macOS, Linux) and otherwise
+streams a tarball over ssh (Windows, which has no rsync).
+
+Resources: `--res` picks a preset and `--time` the wall-time limit (default 1 h).
 Smaller requests are scheduled sooner, and Adroit has only 14 GPUs (4 A100, 8 A100
 MIG slices, 2 A40) but several CPU-only nodes.
 
-| `RES` | request | use for |
+| `--res` | request | use for |
 |---|---|---|
 | `cpu` | no GPU, 4 CPUs, 8G | anything that doesn't need a GPU; usually starts at once |
 | `gpu` (default) | any free GPU, 2 CPUs, 8G | flyvis on GPU; first free A100, A40 or MIG slice |
 | `mig` | A100 3g.20gb slice, 2 CPUs, 8G | small GPU jobs |
 | `a100` | full A100, 4 CPUs, 16G | benchmarking, large batches |
 
-`SBATCH_ARGS` is appended last and overrides the preset (e.g. `--cpus-per-task=12`). Jobs write to
+`--sbatch-args` is appended last and overrides the preset; write it with `=`
+because its value starts with `--`. Jobs write to
 `/scratch/network/ag0226/flyvis-closedloop/runs`, log to `.../logs`, use
 `MUJOCO_GL=egl` and W&B offline mode (`wandb sync` from the login node).

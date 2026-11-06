@@ -52,19 +52,22 @@ Score every condition twice, open loop (direction selectivity index of T4/T5 and
 
 ## Compute
 
-- Local: macOS (Andre's Mac). Code, tests, short flyvis runs, plots. Do not set MUJOCO_GL=egl on the Mac.
+- Local: macOS (CPU only; flyvis does not run on MPS) or Windows (CUDA on an NVIDIA GPU). Code, tests, short flyvis runs, plots. Do not set MUJOCO_GL=egl locally.
+- Every task goes through `python tasks.py <task>` (standard library only, same on every OS); the Makefile is a thin wrapper for machines with make. Keep tasks.py the single implementation: no OS-specific shell scripts.
+- The venv interpreter is .venv/bin/python on macOS/Linux and .venv\Scripts\python.exe on Windows. Use pathlib, not hard-coded separators, and move tensors to the CPU before .numpy() (the default device is CUDA when a GPU is present).
 - Cluster: Princeton Adroit via Slurm. SSH host alias `adroit` with ControlMaster multiplexing (Duo prompts once per session; GlobalProtect VPN off campus). Review https://researchcomputing.princeton.edu/systems/adroit for more information.
-- On Adroit, code lives in ~/cos597z, outputs go to /scratch/network/ag0226/cos597z/runs. Set MUJOCO_GL=egl there.
+- On Adroit, code lives in ~/cos597z, outputs go to /scratch/network/ag0226/flyvis-closedloop/runs (logs in .../logs). Set MUJOCO_GL=egl there.
 - GPU jobs are capped at 2 days. Sweeps are Slurm job arrays, one array index per config.
 - Compute nodes may lack internet. Download pretrained models and data on the login node, and use W&B offline mode plus `wandb sync` (or wandb-osh) if needed.
 - Never run heavy compute on the login node. Interactive GPU work goes through myadroit.princeton.edu Jupyter or `salloc`.
 
 ## Workflow conventions
 
-- Code moves by git only (Mac -> GitHub -> Adroit). Never edit code on the cluster.
+- Code moves by git only (local machine -> GitHub -> Adroit). Never edit code on the cluster.
 - Every run writes to runs/<sweep>/<index>_<seed>/ with the resolved config, the git commit hash, metrics (CSV/JSON) and small plots. Raw neural activity is saved only when a flag asks for it.
 - One Hydra config per experiment; sweeps are config lists indexed by SLURM_ARRAY_TASK_ID.
-- Results come back to the Mac with rsync filtered to *.csv, *.json, *.png (see Makefile target `pull`).
+- Results come back with `python tasks.py pull`, filtered to *.csv, *.json, *.png (rsync where available, a tarball over ssh on Windows).
+- Local data that git does not carry: data/flyvis (`tasks.py models`), data/connectome (`tasks.py connectome`, needs NEUPRINT_APPLICATION_CREDENTIALS in .env), runs/.
 - Keep perturbations (noise, tau scaling, ablation) as hooks on a single pipeline, not forks of the code.
 - Check flyvis's installed source or docs before calling its API. Do not guess function names.
 

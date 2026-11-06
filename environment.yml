@@ -18,8 +18,9 @@ dependencies:
       - hydra-core>=1.3
       - wandb
       - neuprint-python
+      - python-dotenv
       - ruff
       # this repo, editable
       - -e .
-# After creating the env, download the pretrained flyvis ensemble (see `make env`):
+# After creating the env, download the pretrained flyvis ensemble (`python tasks.py models`), i.e.
 #   FLYVIS_ROOT_DIR=$PWD/data/flyvis flyvis download-pretrained

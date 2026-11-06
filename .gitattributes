@@ -1,0 +1,9 @@
+# Normalise line endings in the repo; files that run on Linux (Adroit) or under
+# bash keep LF even when checked out on Windows.
+* text=auto
+*.slurm text eol=lf
+*.sh text eol=lf
+Makefile text eol=lf
+*.png binary
+*.parquet binary
+*.h5 binary
