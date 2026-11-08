@@ -32,6 +32,7 @@ from flyloop.plotting import CATEGORICAL, INK, MUTED, SURFACE
 from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
 from flyloop.stimuli import HexLattice, StimulusSequence, moving_edge
 from flyloop.vision import FlyvisModel
+from flyloop.viz import attach_recorder, save_activity
 
 matplotlib.use("Agg")
 
@@ -162,6 +163,7 @@ def main(cfg: DictConfig) -> None:
     model = FlyvisModel(cfg.model.name, list(cfg.model.cell_types), cfg.model.dt,
                         cfg.model.initial_state, cfg.model.t_init)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
+    recorder = attach_recorder(cfg, model)  # batch entries are the stimuli below
 
     s = cfg.stimulus
     directions = np.asarray(s.directions_deg, dtype=float)
@@ -171,6 +173,10 @@ def main(cfg: DictConfig) -> None:
                          s.end_deg, None, s.t_pre, s.t_post, cfg.model.dt, lattice)
              for pol in polarities for d in directions]
     movie = torch.stack([st.frames for st in stims])  # (n_pol * n_dir, T, 1, 721)
+    if recorder is not None:
+        recorder.label = "moving edges"
+        recorder.batch_labels = [f"{pol} edge {d:g} deg" for pol in polarities
+                                 for d in directions]
     t_stim = time.time()
     resp = model.simulate(StimulusSequence(movie, cfg.model.dt, s.t_pre))
     t_sim = time.time() - t_stim
@@ -204,6 +210,7 @@ def main(cfg: DictConfig) -> None:
                    f"{title}: T4/T5 tuning to moving edges ({cfg.model.name}, "
                    f"{s.speed_deg_s:.0f}°/s)", out_dir / f"tuning_polar_{readout}.png")
 
+    save_activity(recorder, out_dir, cfg)
     metrics = pd.concat(all_metrics, ignore_index=True)
     summary = pd.concat(summaries, ignore_index=True)
     if cfg.analysis.compare_flyvis:

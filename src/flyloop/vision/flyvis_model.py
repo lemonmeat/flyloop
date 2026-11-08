@@ -68,7 +68,14 @@ class FlyvisModel:
             frame over t_init), or "none" (flyvis's default initial state).
         t_init: Duration used to compute the initial state.
         checkpoint: flyvis checkpoint selector ("best" or an index).
+
+    Attributes:
+        recorder: Optional `flyloop.viz.ActivityRecorder`. When set, every stepped
+            frame's input and T4/T5 activity are passed to it, and each
+            `init_state` starts a new trial.
     """
+
+    recorder = None
 
     def __init__(
         self,
@@ -144,6 +151,8 @@ class FlyvisModel:
         """
         if self.initial_state not in ("steady", "fade_in", "none"):
             raise ValueError(f"unknown initial_state {self.initial_state!r}")
+        if self.recorder is not None:
+            self.recorder.new_trial()
         n = int(self.t_init / self.dt) if self.t_init and self.t_init > 0 else 0
         if self.initial_state == "none" or n == 0:
             return None
@@ -162,9 +171,12 @@ class FlyvisModel:
         first = torch.as_tensor(first_frame, dtype=torch.float32, device=self.device)
         ramp = torch.linspace(0, 1, n, device=self.device)[None, :, None, None]
         frames = ramp * (first[:, None] - 0.5) + 0.5  # contrast ramp, (batch, n, 1, hexals)
-        state = None
-        for k in range(0, n, 100):
-            state = self._integrate(frames[:, k : k + 100], state, lambda act: None)
+        state, recorder, self.recorder = None, self.recorder, None  # not recorded
+        try:
+            for k in range(0, n, 100):
+                state = self._integrate(frames[:, k : k + 100], state, lambda act: None)
+        finally:
+            self.recorder = recorder
         return state
 
     @torch.no_grad()
@@ -266,7 +278,10 @@ class FlyvisModel:
         x = stim()
         if state is None:
             state = self.network._initial_state(params, frames.shape[0])
+        recorder = self.recorder
         for i in range(x.shape[1]):
             state = self.network._next_state(params, state, x[:, i], self.dt)
             readout(state.nodes.activity)
+            if recorder is not None:
+                recorder.record(frames[:, i, 0], state.nodes.activity)
         return state

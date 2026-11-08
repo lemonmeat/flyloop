@@ -42,6 +42,7 @@ from flyloop.plotting import CATEGORICAL, INK, MUTED, SURFACE, style_axes
 from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
 from flyloop.sim import AXES, ClosedLoop, KinematicBody, SphereWorld, VisualRig
 from flyloop.vision import FlyvisModel
+from flyloop.viz import attach_recorder, name_trial, save_activity
 
 matplotlib.use("Agg")
 
@@ -107,6 +108,7 @@ def run_trial(loop: ClosedLoop, tr: dict, cfg) -> pd.DataFrame:
         def motion(world, t, dt):
             if t >= cfg.t_on:
                 world.rotate(AXIS_VECTORS[tr["axis"]], tr["world_omega"], dt)
+    name_trial(loop.rig.model, f"{tr['group']}: {condition_name(tr)} {tr['axis'] or ''}".strip())
     set_t4t5_output(loop.rig.lptc, tr["vision"])
     loop.controller.kd[:] = tr["kd"]
     try:
@@ -223,13 +225,15 @@ def main(cfg: DictConfig) -> None:
     w = LPTCWeights.from_source(cfg.lptc.source)
     params = LPTCParams.from_config(cfg.lptc)
     models = list(cfg.models)
-    meta = None
+    meta = recorder = None
     scores, series, calib = [], [], []
     for model_name in models:
         model = FlyvisModel(model_name, dt=dt)
         if meta is None:
             meta = write_run_metadata(out_dir, cfg, device=str(model.device))
+        recorder = attach_recorder(cfg, model, recorder)
         rig = VisualRig(eyes, model, LPTCLayer(w, dt, params))
+        name_trial(model, "calibration")
         decoder = RotationDecoder(w, eyes, g_exc=params.g_exc, g_inh=params.g_inh)
         gain = calibrate_decoder(decoder, rig, lambda: make_world("checkerboard", cfg),
                                  cfg.calibration.omega_deg_s, cfg.calibration.t_move,
@@ -258,6 +262,7 @@ def main(cfg: DictConfig) -> None:
     plot_traces(ts, models, cfg, out_dir / "closedloop_traces.png")
     plot_compensation(scores, models, out_dir / "compensation.png")
     plot_gain_scan(scores, models, out_dir / "gain_scan.png")
+    save_activity(recorder, out_dir, cfg)
 
     tq = scores[scores.group == "torque"]
     meta.update(

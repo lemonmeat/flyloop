@@ -120,7 +120,34 @@ Every run writes `runs/<sweep>/<index>_<seed>/`:
 - CSV metrics and PNG plots
 
 Raw traces are saved only when a config flag asks for them (`save_raw=true` in
-`openloop_tuning`). Set `FLYLOOP_RUNS` to write elsewhere.
+`openloop_tuning`, or `viz.enabled=true` below). Set `FLYLOOP_RUNS` to write elsewhere.
+
+### Activity viewer
+
+Any experiment can record what the eyes see and what T4/T5 do, so you can check
+the effect of a parameter change frame by frame. With `viz.enabled=true`, every
+frame's photoreceptor input and the voltage of every column of T4a-d and T5a-d are
+recorded. Each network reset starts a new trial; for example, each drum velocity is
+one trial in `drum_openloop`. The run then writes `viz/` with:
+
+- `activity.npz`: the recorded arrays
+- `trial_<k>.png`: the last frame of each recorded trial
+- `activity.mp4`: every recorded frame (needs `--extras video`)
+
+```bash
+python tasks.py run drum_openloop viz.enabled=true "viz.trials=['connectome 90 deg']"
+python tasks.py run view_activity runs/drum_openloop/0_0              # time slider
+python tasks.py run view_activity runs/drum_openloop/0_0 runs/drum_openloop/1_0 --vmax 1
+```
+
+`viz.trials` picks trials by index or by part of their label (labels such as
+`connectome 90 deg/s` or `torque: intact yaw` are listed in `activity.npz`). Recording
+stops after `viz.max_frames` frames, and `viz.every` thins the frames. The settings
+are in `configs/common.yaml`. Each eye's maps are drawn as the fly sees them, with
+the front in the middle of the figure and dorsal up. For `openloop_tuning`, the
+panels are stimuli: `viz.batch` picks them, in the order ON then OFF, each over
+`directions_deg`. To compare runs, give `view_activity` several runs: one slider
+moves them all to the same frame, and `--vmax` sets the same colour scale for each.
 
 A sweep is a `sweep_list` of override dicts in an experiment config; `index=N` (or
 `--index N`) picks entry N, and on a cluster each entry becomes one array task.
@@ -137,7 +164,10 @@ Settings shared by all experiments (output folder, index, seed) are in
 | `flybody_corridor` | `timeseries.csv`, `flybody_corridor.png`, `flybody_corridor.mp4` |
 | `benchmark_speed` | `benchmark.json`, `benchmark.txt`: wall-clock time per simulated second of flyvis |
 | `animate_corridor` | `corridor_animation.mp4` (or `.gif`) from a finished `corridor` run |
+| `animate_corridor_activity` | `viz/corridor_activity_trial<k>.mp4`: a recorded corridor trial from above, with its photoreceptor and T4/T5 maps |
 | `summarize_model_selection` | `selection.csv`: pretrained models ranked by T4/T5 tuning |
+| `view_activity` | Time slider over `viz/activity.npz` of one or more runs; `--movie` re-renders `activity.mp4` |
+| any experiment with `viz.enabled=true` | `viz/activity.npz`, `viz/trial_<k>.png`, `viz/activity.mp4` |
 
 ## How the pieces fit
 
@@ -175,6 +205,7 @@ src/flyloop/
   perturb/      T4/T5 silencing
   metrics/      direction selectivity, preferred direction, peak responses
   plotting.py   shared figure style
+  viz.py        activity viewer: records photoreceptor input and T4/T5 maps per frame
 configs/        one Hydra config per experiment, plus common.yaml
 scripts/        experiments (run_*.py) and tools
 slurm/          Slurm job script for cluster runs

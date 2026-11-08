@@ -31,6 +31,7 @@ from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_
 from flyloop.sim import ClosedLoop, Corridor, SphereWorld, VisualRig
 from flyloop.sim.flybody_body import FlybodyBody, Replay
 from flyloop.vision import FlyvisModel
+from flyloop.viz import attach_recorder, name_trial, save_activity
 
 matplotlib.use("Agg")
 
@@ -80,6 +81,7 @@ def main(cfg: DictConfig) -> None:
     t0 = time.time()
     model = FlyvisModel(cfg.model, dt=cfg.dt)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
+    recorder = attach_recorder(cfg, model)
     eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
     w = LPTCWeights.from_source(cfg.lptc.source)
     rig = VisualRig(eyes, model, LPTCLayer(w, cfg.dt, LPTCParams.from_config(cfg.lptc)))
@@ -89,6 +91,7 @@ def main(cfg: DictConfig) -> None:
     limit = 0.5 - cfg.collision_margin
 
     decoder = RotationDecoder(w, eyes)
+    name_trial(model, "calibration")
     calibrate_decoder(decoder, rig, lambda: SphereWorld.checkerboard(20), t_settle=cfg.t_settle)
     print(f"decoder calibrated ({time.time() - t0:.0f} s)")
 
@@ -99,6 +102,7 @@ def main(cfg: DictConfig) -> None:
                        average_pose=f.average_pose, seed=cfg.seed)
     loop = ClosedLoop(rig, body, decoder, PDController(cfg.optomotor.kp, cfg.optomotor.kd))
     y0, h0 = cfg.start
+    name_trial(model, "closed loop")
     t1 = time.time()
     df = loop.run(corridor, cfg.t_run, disturbance=[0, 0, cfg.torque_deg_s],
                   t_settle=cfg.t_settle, start_position=[0.0, y0, 0.0], start_heading_deg=h0,
@@ -108,6 +112,7 @@ def main(cfg: DictConfig) -> None:
           f"{(time.time() - t1) / n_frames * 1000:.0f} ms per frame")
     df.to_csv(out_dir / "timeseries.csv", index=False)
     plot_summary(df, limit, out_dir / "flybody_corridor.png")
+    save_activity(recorder, out_dir, cfg)
 
     replay = Replay(body, cfg.video.height, cfg.video.width)
     with imageio.get_writer(out_dir / "flybody_corridor.mp4", fps=cfg.video.fps,

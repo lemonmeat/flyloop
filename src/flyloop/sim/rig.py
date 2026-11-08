@@ -48,6 +48,8 @@ class VisualRig:
         """Grey steady state, then t_settle seconds of the static scene so the
         network has adapted to it before anything moves. Returns the settling
         output (None if t_settle is 0)."""
+        if self.model.recorder is not None:
+            self.model.recorder.batch_labels = list(EYE_ORDER)
         vis = self.model.init_state(len(EYE_ORDER))
         self.state = {"vision": vis, "lptc": self.lptc.init_state(len(EYE_ORDER))}
         n = int(round(t_settle / self.dt))

@@ -36,6 +36,7 @@ from flyloop.plotting import CATEGORICAL, GRID, INK, MUTED, SURFACE
 from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
 from flyloop.sim import SphereWorld, VerticalGrating, VisualRig, horizontal_axis
 from flyloop.vision import FlyvisModel
+from flyloop.viz import attach_recorder, name_trial, save_activity
 
 matplotlib.use("Agg")
 
@@ -176,6 +177,7 @@ def main(cfg: DictConfig) -> None:
     dt = cfg.model.dt
     model = FlyvisModel(cfg.model.name, dt=dt)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
+    recorder = attach_recorder(cfg, model)
     eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
     params = LPTCParams.from_config(cfg.lptc)
 
@@ -184,14 +186,17 @@ def main(cfg: DictConfig) -> None:
         w = LPTCWeights.from_source(source)
         rig = VisualRig(eyes, model, LPTCLayer(w, dt, params))
 
-        for label, sign in (("down", -1), ("up", +1)):
+        for motion, sign in (("down", -1), ("up", +1)):
+            name_trial(model, f"{source} vertical grating {motion}")
             v = run(rig, VerticalGrating(cfg.vertical.period_deg),
                     lambda g, s=sign: g.drift(s * cfg.vertical.speed_deg_s, dt), cfg)
-            vertical += long_rows(v, source, w.cells, motion=label)
+            vertical += long_rows(v, source, w.cells, motion=motion)
 
+        name_trial(model, f"{source} static")
         base = run(rig, make_world(cfg.world), lambda g: None, cfg)
         for theta in cfg.rotation.axis_azimuths_deg:
             axis = horizontal_axis(theta)
+            name_trial(model, f"{source} rotation axis {theta:g} deg")
             v = run(rig, make_world(cfg.world),
                     lambda g, a=axis: g.rotate(a, cfg.rotation.omega_deg_s, dt), cfg) - base
             axis_rows += long_rows(v, source, w.cells, axis_azimuth_deg=theta)
@@ -211,6 +216,7 @@ def main(cfg: DictConfig) -> None:
                                                            fit.matched_filter_axis_deg)
         axes_tables.append(fit.assign(source=source))
 
+    save_activity(recorder, out_dir, cfg)
     vertical = pd.DataFrame(vertical)
     axis_df = pd.DataFrame(axis_rows)
     axes_df = pd.concat(axes_tables, ignore_index=True)

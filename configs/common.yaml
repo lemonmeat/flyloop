@@ -12,3 +12,15 @@ hydra:
   output_subdir: .hydra
   job:
     chdir: false
+
+# Activity viewer (flyloop.viz): photoreceptor input and T4/T5 maps of each frame.
+# A trial starts at every network reset; trial labels are listed in viz/activity.npz.
+viz:
+  enabled: false       # record and write <run>/viz/ (activity.npz, trial_<k>.png, activity.mp4)
+  trials: null         # null = all; ints = trial indices, strings = parts of trial labels
+  batch: [0, 1]        # batch entries shown (VisualRig: 0 = left eye, 1 = right eye)
+  every: 1             # keep every n-th frame
+  max_frames: 1500     # stop recording after this many frames
+  vmax: null           # T4/T5 colour limit; null = 99.5th percentile of |voltage|
+  movie: true          # write activity.mp4 (needs the video extra)
+  fps: 25

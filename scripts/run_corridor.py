@@ -51,6 +51,7 @@ from flyloop.plotting import CATEGORICAL, GRID, INK, MUTED, SURFACE, style_axes
 from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
 from flyloop.sim import ClosedLoop, Corridor, KinematicBody, SphereWorld, VisualRig
 from flyloop.vision import FlyvisModel
+from flyloop.viz import attach_recorder, name_trial, save_activity
 
 matplotlib.use("Agg")
 
@@ -202,6 +203,7 @@ def main(cfg: DictConfig) -> None:
     rng = np.random.default_rng(cfg.seed)
     model = FlyvisModel(cfg.model, dt=dt)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
+    recorder = attach_recorder(cfg, model)
     eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
     w = LPTCWeights.from_source(cfg.lptc.source)
     rig = VisualRig(eyes, model, LPTCLayer(w, dt, LPTCParams.from_config(cfg.lptc)))
@@ -211,11 +213,13 @@ def main(cfg: DictConfig) -> None:
 
     # 1. HS yaw decoder (sphere) and offset sensitivity b (straight flight, train walls)
     decoder = RotationDecoder(w, eyes)
+    name_trial(model, "calibration")
     calibrate_decoder(decoder, rig, lambda: SphereWorld.checkerboard(20), t_settle=cfg.t_settle)
     straight = {}
     skip = int(round(1.0 / dt))  # let the network adapt to the flow for 1 s
     for y0 in (-0.2, 0.0, 0.2):
         for x0 in np.arange(3) * cfg.corridor.length / 3:
+            name_trial(model, f"straight y={y0:+.1f}")
             V, _ = fly_path(rig, train, x0, y0, lambda t: 0.0, cfg.speed, 3.0)
             straight[(y0, x0)] = V[skip:]
     decoder.set_baseline(np.concatenate([v for (y, _), v in straight.items() if y == 0]).mean(0))
@@ -230,7 +234,9 @@ def main(cfg: DictConfig) -> None:
     readout = LinearReadout(("yaw_rate", "offset", "heading"), w.cells,
                             filter_taus_s=tuple(cfg.sysid.filter_taus_s), dt=dt)
     k = int(round(cfg.sysid.t_skip / dt))
+    name_trial(model, "sysid train walls")
     d_train = sysid(rig, train, cfg, cfg.sysid.n_train, rng)
+    name_trial(model, "sysid unseen walls")
     d_test = sysid(rig, test, cfg, cfg.sysid.n_test, rng)
     X, Y, G = stack(readout, d_train, k)
     r2_cv = readout.fit(X, Y, cfg.sysid.ridge, G)
@@ -270,6 +276,8 @@ def main(cfg: DictConfig) -> None:
         silenced = tr["controller"].endswith("silenced")
         set_t4t5_output(rig.lptc, "silenced" if silenced else "intact")
         saved = decoder.baseline.copy()
+        name_trial(model, f"{tr['controller']} y={tr['start_y']:+.2f} "
+                          f"heading={tr['start_heading']:+g} torque={tr['torque']:g}")
         # a silenced fly's set point is its own (silent) output, as in closedloop;
         # keeping the intact baseline would inject a constant fake yaw signal
         df = loop.run(test, cfg.t_run, disturbance=[0, 0, tr["torque"]], t_settle=cfg.t_settle,
@@ -285,6 +293,7 @@ def main(cfg: DictConfig) -> None:
     scores.to_csv(out_dir / "scores.csv", index=False)
     ts.to_csv(out_dir / "timeseries.csv", index=False)
     plot_paths(ts, cfg, limit, out_dir / "corridor_paths.png")
+    save_activity(recorder, out_dir, cfg)
 
     no_torque = scores[scores.torque == 0]
     meta.update(

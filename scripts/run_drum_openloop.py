@@ -7,6 +7,7 @@ against angular velocity for each LPTC weight source.
 
     python tasks.py run drum_openloop
     python tasks.py run drum_openloop drum.kind=texture drum.alpha=1.0
+    python tasks.py run drum_openloop viz.enabled=true "viz.trials=['connectome 90 deg']"
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from flyloop.plotting import CATEGORICAL, GRID, INK, MUTED, SURFACE
 from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
 from flyloop.sim import Drum, VisualRig
 from flyloop.vision import FlyvisModel
+from flyloop.viz import attach_recorder, name_trial, save_activity
 
 matplotlib.use("Agg")
 
@@ -42,13 +44,14 @@ def make_drum(cfg) -> Drum:
     raise ValueError(f"unknown drum kind {cfg.kind!r}")
 
 
-def tuning(rig: VisualRig, cfg: DictConfig) -> pd.DataFrame:
+def tuning(rig: VisualRig, cfg: DictConfig, source: str = "") -> pd.DataFrame:
     n_rot = int(round(cfg.t_rotate / rig.dt))
     groups = {"HS": [i for i, c in enumerate(rig.cells) if c.startswith("HS")],
               "VS": [i for i, c in enumerate(rig.cells) if c.startswith("VS")]}
     rows = []
     for omega in cfg.omegas_deg_s:
         drum = make_drum(cfg.drum)
+        name_trial(rig.model, f"{source} {omega:g} deg/s".strip())
         rig.reset(drum, t_settle=cfg.t_settle)
         out = []
         for _ in range(n_rot):
@@ -93,13 +96,14 @@ def main(cfg: DictConfig) -> None:
     t0 = time.time()
     model = FlyvisModel(cfg.model.name, dt=cfg.model.dt)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
+    recorder = attach_recorder(cfg, model)
     eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
     params = LPTCParams.from_config(cfg.lptc)
     frames = []
     for source in cfg.lptc.sources:
         w = LPTCWeights.from_source(source)
         rig = VisualRig(eyes, model, LPTCLayer(w, cfg.model.dt, params))
-        frames.append(tuning(rig, cfg).assign(source=source))
+        frames.append(tuning(rig, cfg, source).assign(source=source))
         if source == "connectome":
             meta["connectome"] = {k: v for k, v in w.info.items() if k != "body_ids"}
     df = pd.concat(frames, ignore_index=True)
@@ -108,6 +112,7 @@ def main(cfg: DictConfig) -> None:
             else f"1/f^{cfg.drum.alpha:g} texture")
     plot(df, f"Open-loop yaw tuning, {drum} drum ({cfg.model.name})",
          out_dir / "yaw_tuning.png")
+    save_activity(recorder, out_dir, cfg)
     meta["total_s"] = round(time.time() - t0, 1)
     save_meta(out_dir, meta)
     hs = df[df.cells == "HS"].pivot(index="omega_deg_s", columns="source",
