@@ -17,44 +17,43 @@ run:
 Scores use the last t_score seconds: drift = mean body angular velocity about the
 tested axis, compensation = 1 - drift / torque, follow gain = drift / world speed.
 
-    python scripts/run_closedloop.py
-    python scripts/run_closedloop.py models=[flow/0000/000] controller.kd=0.5
+    python tasks.py run closedloop
+    python tasks.py run closedloop "models=[flow/0000/000]" controller.kd=0.5
 """
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 import hydra
 import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig
+
+from flyloop.control import AXIS_VECTORS, PDController, RotationDecoder, calibrate_decoder
+from flyloop.eyes import Eyes
+from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights
+from flyloop.perturb import set_t4t5_output
+from flyloop.plotting import CATEGORICAL, INK, MUTED, SURFACE, style_axes
+from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
+from flyloop.sim import AXES, ClosedLoop, KinematicBody, SphereWorld, VisualRig
+from flyloop.vision import FlyvisModel
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-from hydra.core.hydra_config import HydraConfig  # noqa: E402
-from omegaconf import DictConfig  # noqa: E402
-
-from flyloop.control import AXIS_VECTORS, PDController, RotationDecoder, calibrate_decoder  # noqa: E402
-from flyloop.eyes import Eyes  # noqa: E402
-from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights  # noqa: E402
-from flyloop.perturb import set_t4t5_output  # noqa: E402
-from flyloop.runio import apply_sweep, rewrite_index_flag, write_run_metadata  # noqa: E402
-from flyloop.sim import AXES, ClosedLoop, KinematicBody, SphereWorld, VisualRig  # noqa: E402
-from flyloop.vision import FlyvisModel  # noqa: E402
 
 TESTED_AXES = ("yaw", "pitch", "roll")
-MODEL_COLORS = ["#2a78d6", "#eb6834"]  # categorical slots 1, 2
+MODEL_COLORS = CATEGORICAL[:2]
 VISION_STYLE = {  # label, color, dash
-    "intact": ("T4/T5 intact", "#2a78d6", "-"),
-    "T4_only": ("T4 only (T5 silenced)", "#eb6834", "-"),
-    "T5_only": ("T5 only (T4 silenced)", "#1baf7a", "-"),
-    "silenced": ("T4/T5 silenced", "#52514e", (0, (4, 2))),
+    "intact": ("T4/T5 intact", CATEGORICAL[0], "-"),
+    "T4_only": ("T4 only (T5 silenced)", CATEGORICAL[1], "-"),
+    "T5_only": ("T5 only (T4 silenced)", CATEGORICAL[2], "-"),
+    "silenced": ("T4/T5 silenced", MUTED, (0, (4, 2))),
 }
 GREY_STYLE = ("grey world (no features; under silenced)", "#8f8e88", (0, (1, 1.5)))
-INK, MUTED, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
 
 
 def make_world(kind: str, cfg):
@@ -137,21 +136,13 @@ def score(df: pd.DataFrame, tr: dict, cfg) -> list[dict]:
     return rows
 
 
-def _style(ax):
-    ax.set_facecolor(SURFACE)
-    ax.grid(color=GRID, lw=0.5)
-    ax.tick_params(colors=MUTED, labelsize=7.5)
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
-
-
 def plot_traces(ts: pd.DataFrame, models: list[str], cfg, path: Path):
     fig, axs = plt.subplots(len(models), 3, figsize=(10.5, 2.9 * len(models)), sharex=True,
                             sharey=True, squeeze=False, facecolor=SURFACE)
     for r, model in enumerate(models):
         for c, axis in enumerate(TESTED_AXES):
             ax = axs[r, c]
-            _style(ax)
+            style_axes(ax, grid=True)
             sel = ts[(ts.model == model) & (ts.axis == axis)]
             for vision, (label, color, dash) in VISION_STYLE.items():
                 g = sel[(sel.group == "torque") & (sel.vision == vision)]
@@ -162,7 +153,7 @@ def plot_traces(ts: pd.DataFrame, models: list[str], cfg, path: Path):
             ax.axvline(cfg.t_on, color=MUTED, lw=0.8)
             ax.set_title(f"{model.split('/')[-1]}: {axis} torque", fontsize=9.5, color=INK)
             if c == 0:
-                ax.set_ylabel(f"rotation about the\ntorque axis (deg)", color=INK, fontsize=8.5)
+                ax.set_ylabel("rotation about the\ntorque axis (deg)", color=INK, fontsize=8.5)
             if r == len(models) - 1:
                 ax.set_xlabel("time in closed loop (s)", color=INK, fontsize=8.5)
     handles, labels = axs[0, 0].get_legend_handles_labels()
@@ -182,7 +173,7 @@ def plot_compensation(scores: pd.DataFrame, models: list[str], path: Path):
     fig, axs = plt.subplots(1, 3, figsize=(11, 3.4), sharey=True, facecolor=SURFACE)
     width = 0.8 / len(models)
     for ax, axis in zip(axs, TESTED_AXES):
-        _style(ax)
+        style_axes(ax, grid=True)
         ax.grid(axis="x", visible=False)
         for m, model in enumerate(models):
             s = scores[(scores.model == model) & (scores.axis == axis)].set_index("condition")
@@ -192,7 +183,7 @@ def plot_compensation(scores: pd.DataFrame, models: list[str], path: Path):
         ax.axhline(0, color=INK, lw=0.8)
         ax.axhline(100, color=MUTED, lw=0.8, ls=(0, (2, 2)))
         ax.set_xticks(np.arange(len(conds)))
-        ax.set_xticklabels([l for _, l in conds], fontsize=7.5, color=MUTED)
+        ax.set_xticklabels([label for _, label in conds], fontsize=7.5, color=MUTED)
         ax.set_title(f"{axis} torque", fontsize=10, color=INK)
     axs[0].set_ylabel("torque compensated (%)\n100 = no drift, 0 = spins freely", color=INK,
                       fontsize=8.5)
@@ -208,7 +199,7 @@ def plot_gain_scan(scores: pd.DataFrame, models: list[str], path: Path):
     fig, axs = plt.subplots(1, 2, figsize=(7.5, 2.9), facecolor=SURFACE)
     for ax, (col, label) in zip(axs, [("drift_deg_s", "yaw drift (deg/s)"),
                                       ("oscillation_sd_deg_s", "yaw rate SD (deg/s)")]):
-        _style(ax)
+        style_axes(ax, grid=True)
         for m, model in enumerate(models):
             g = scores[(scores.model == model) & (scores.group == "gain_scan")].sort_values("kd")
             ax.plot(g.kd, g[col], color=MODEL_COLORS[m], lw=2, marker="o", ms=5,
@@ -222,9 +213,6 @@ def plot_gain_scan(scores: pd.DataFrame, models: list[str], path: Path):
     plt.close(fig)
 
 
-rewrite_index_flag()
-
-
 @hydra.main(config_path="../configs", config_name="closedloop", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     cfg = apply_sweep(cfg)
@@ -232,8 +220,8 @@ def main(cfg: DictConfig) -> None:
     t0 = time.time()
     dt = cfg.dt
     eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
-    w = LPTCWeights.from_connectome() if cfg.lptc.source == "connectome" else LPTCWeights.simple()
-    params = LPTCParams(cfg.lptc.tau_lptc, cfg.lptc.tau_lpi, cfg.lptc.g_exc, cfg.lptc.g_inh)
+    w = LPTCWeights.from_source(cfg.lptc.source)
+    params = LPTCParams.from_config(cfg.lptc)
     models = list(cfg.models)
     meta = None
     scores, series, calib = [], [], []
@@ -281,7 +269,7 @@ def main(cfg: DictConfig) -> None:
              > tq[tq.vision == "silenced"].set_index(["model", "axis"]).compensation + 0.5).all()),
         total_s=round(time.time() - t0, 1),
     )
-    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, default=str))
+    save_meta(out_dir, meta)
     with pd.option_context("display.width", 200, "display.precision", 2):
         print(scores[["model", "group", "condition", "axis", "drift_deg_s", "compensation",
                       "follow_gain", "final_angle_deg", "oscillation_sd_deg_s",
@@ -293,4 +281,5 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    rewrite_index_flag()
     main()

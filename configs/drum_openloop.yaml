@@ -1,10 +1,12 @@
 # Open-loop yaw tuning: rotate a drum at fixed angular velocities and record the
-# HS/VS left-right difference. Run: python scripts/run_drum_openloop.py [key=value ...]
+# HS/VS left-right difference.
+# Run: python tasks.py run drum_openloop [key=value ...]
+
+defaults:
+  - common
+  - _self_
 
 sweep: drum_openloop
-index: 0
-seed: 0
-out_root: ${oc.env:FLYLOOP_RUNS,runs}
 
 model:
   name: flow/0000/000
@@ -16,8 +18,9 @@ eyes:
 
 lptc:
   sources: [connectome, simple]
-  tau_lptc: 0.01
-  tau_lpi: 0.01
+  preset: simple       # LPTC/LPi time constants: simple (10 ms) or literature (3 ms)
+  tau_lptc: null       # s; set to override the preset
+  tau_lpi: null
   g_exc: 1.0
   g_inh: 1.0
 
@@ -31,12 +34,3 @@ drum:
 omegas_deg_s: [-720, -360, -180, -90, -45, -20, -10, 0, 10, 20, 45, 90, 180, 360, 720]
 t_settle: 0.5          # s of static drum before rotation
 t_rotate: 1.5          # s of rotation; the last half is averaged
-
-sweep_list: []
-
-hydra:
-  run:
-    dir: ${out_root}/${sweep}/${index}_${seed}
-  output_subdir: .hydra
-  job:
-    chdir: false

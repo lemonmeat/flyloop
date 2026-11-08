@@ -18,27 +18,24 @@ signal. The script
      efference_silenced   the same with T4/T5 output blocked
    from several start offsets/headings, and with a constant yaw torque.
 
-    python scripts/run_corridor.py
-    python scripts/run_corridor.py corridor.pattern=texture speed=1.0
+    python tasks.py run corridor
+    python tasks.py run corridor corridor.pattern=texture speed=1.0
 """
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 import hydra
 import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-from hydra.core.hydra_config import HydraConfig  # noqa: E402
-from omegaconf import DictConfig  # noqa: E402
-
-from flyloop.control import (  # noqa: E402
+from flyloop.control import (
     CorridorController,
     EfferenceCentering,
     LinearReadout,
@@ -46,22 +43,26 @@ from flyloop.control import (  # noqa: E402
     RotationDecoder,
     calibrate_decoder,
 )
-from flyloop.eyes import Eyes  # noqa: E402
-from flyloop.geometry import rotation_matrix  # noqa: E402
-from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights  # noqa: E402
-from flyloop.perturb import set_t4t5_output  # noqa: E402
-from flyloop.runio import apply_sweep, rewrite_index_flag, write_run_metadata  # noqa: E402
-from flyloop.sim import ClosedLoop, Corridor, KinematicBody, SphereWorld, VisualRig  # noqa: E402
-from flyloop.vision import FlyvisModel  # noqa: E402
+from flyloop.eyes import Eyes
+from flyloop.geometry import rotation_matrix
+from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights
+from flyloop.perturb import set_t4t5_output
+from flyloop.plotting import CATEGORICAL, GRID, INK, MUTED, SURFACE, style_axes
+from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
+from flyloop.sim import ClosedLoop, Corridor, KinematicBody, SphereWorld, VisualRig
+from flyloop.vision import FlyvisModel
 
+matplotlib.use("Agg")
+
+# also used by scripts/animate_corridor.py
 CONTROLLERS = ("none", "optomotor", "readout", "efference", "efference_silenced")
 LABELS = {"none": "no steering", "optomotor": "optomotor only (HS yaw PD)",
           "readout": "fitted HS/VS readout (vision only)",
-          "efference": "HS + efference copy", "efference_silenced": "HS + efference copy, T4/T5 silenced"}
-START_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]  # categorical slots 1-4
-CTRL_COLORS = {"none": "#52514e", "optomotor": "#2a78d6", "readout": "#eb6834",
-               "efference": "#1baf7a"}
-INK, MUTED, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
+          "efference": "HS + efference copy",
+          "efference_silenced": "HS + efference copy, T4/T5 silenced"}
+START_COLORS = CATEGORICAL
+CTRL_COLORS = {"none": MUTED, "optomotor": CATEGORICAL[0], "readout": CATEGORICAL[1],
+               "efference": CATEGORICAL[2]}
 
 
 def make_corridor(cfg, seed: int) -> Corridor:
@@ -91,14 +92,19 @@ def fly_path(rig: VisualRig, world, x0: float, y0: float, psi_fn, speed: float, 
 
 
 def sysid(rig, world, cfg, n: int, rng) -> list[tuple[np.ndarray, np.ndarray]]:
+    """n open-loop flights with a sinusoidally wiggling heading (random amplitude,
+    frequency, phase, and half of them with a constant bias)."""
     out = []
     for _ in range(n):
-        A = rng.uniform(0, cfg.sysid.max_amplitude_deg)
-        f, ph = rng.uniform(0.2, 1.2), rng.uniform(0, 2 * np.pi)
+        amp = rng.uniform(0, cfg.sysid.max_amplitude_deg)
+        freq, phase = rng.uniform(0.2, 1.2), rng.uniform(0, 2 * np.pi)
         bias = rng.uniform(-20, 20) * (rng.random() < 0.5)
-        V, S = fly_path(rig, world, rng.uniform(0, cfg.corridor.length), rng.uniform(-0.3, 0.3),
-                        lambda t: bias + A * np.sin(2 * np.pi * f * t + ph), cfg.speed,
-                        cfg.sysid.t_traj)
+        x0, y0 = rng.uniform(0, cfg.corridor.length), rng.uniform(-0.3, 0.3)
+
+        def heading(t, amp=amp, freq=freq, phase=phase, bias=bias):
+            return bias + amp * np.sin(2 * np.pi * freq * t + phase)
+
+        V, S = fly_path(rig, world, x0, y0, heading, cfg.speed, cfg.sysid.t_traj)
         k = int(round(cfg.sysid.t_skip / rig.dt))
         if len(V) > k + 10:
             out.append((V, S))
@@ -126,20 +132,13 @@ def score(df: pd.DataFrame, cfg, limit: float) -> dict:
                 yaw_rate_sd=late.omega_yaw.std(), distance=df.x.iloc[-1] - df.x.iloc[0])
 
 
-def _style(ax):
-    ax.set_facecolor(SURFACE)
-    ax.tick_params(colors=MUTED, labelsize=7.5)
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
-
-
 def plot_paths(ts: pd.DataFrame, cfg, limit: float, path: Path):
-    panels = [c for c in CONTROLLERS] + ["torque"]
+    panels = [*CONTROLLERS, "torque"]
     fig, axs = plt.subplots(len(panels), 1, figsize=(9, 1.45 * len(panels) + 0.6), sharex=True,
                             facecolor=SURFACE)
     xmax = cfg.speed * cfg.t_run
     for ax, panel in zip(axs, panels):
-        _style(ax)
+        style_axes(ax)
         for w in (-0.5, 0.5):
             ax.axhline(w, color=INK, lw=2)
         ax.axhline(0, color=GRID, lw=0.8)
@@ -181,9 +180,8 @@ def plot_paths(ts: pd.DataFrame, cfg, limit: float, path: Path):
 
 def plot_offset_signal(cal: pd.DataFrame, b: float, path: Path):
     fig, ax = plt.subplots(figsize=(4.4, 3.2), facecolor=SURFACE)
-    _style(ax)
-    ax.grid(color=GRID, lw=0.5)
-    ax.scatter(cal.y, cal.yaw_estimate, s=30, color="#2a78d6", edgecolor=SURFACE, lw=1.5,
+    style_axes(ax, grid=True)
+    ax.scatter(cal.y, cal.yaw_estimate, s=30, color=CATEGORICAL[0], edgecolor=SURFACE, lw=1.5,
                zorder=3, label="straight flight, one wall position each")
     ys = np.array([cal.y.min(), cal.y.max()])
     ax.plot(ys, b * ys, color=MUTED, lw=1, ls=(0, (2, 2)), label=f"b = {b:.0f} deg/s per width")
@@ -193,9 +191,6 @@ def plot_offset_signal(cal: pd.DataFrame, b: float, path: Path):
     fig.tight_layout()
     fig.savefig(path, dpi=150, facecolor=SURFACE)
     plt.close(fig)
-
-
-rewrite_index_flag()
 
 
 @hydra.main(config_path="../configs", config_name="corridor", version_base="1.3")
@@ -208,19 +203,21 @@ def main(cfg: DictConfig) -> None:
     model = FlyvisModel(cfg.model, dt=dt)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
     eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
-    w = LPTCWeights.from_connectome() if cfg.lptc.source == "connectome" else LPTCWeights.simple()
-    rig = VisualRig(eyes, model, LPTCLayer(w, dt, LPTCParams(cfg.lptc.tau_lptc, cfg.lptc.tau_lpi)))
-    train, test = make_corridor(cfg, cfg.corridor.train_seed), make_corridor(cfg, cfg.corridor.test_seed)
+    w = LPTCWeights.from_source(cfg.lptc.source)
+    rig = VisualRig(eyes, model, LPTCLayer(w, dt, LPTCParams.from_config(cfg.lptc)))
+    train = make_corridor(cfg, cfg.corridor.train_seed)
+    test = make_corridor(cfg, cfg.corridor.test_seed)
     limit = 0.5 - cfg.collision_margin
 
     # 1. HS yaw decoder (sphere) and offset sensitivity b (straight flight, train walls)
     decoder = RotationDecoder(w, eyes)
     calibrate_decoder(decoder, rig, lambda: SphereWorld.checkerboard(20), t_settle=cfg.t_settle)
     straight = {}
+    skip = int(round(1.0 / dt))  # let the network adapt to the flow for 1 s
     for y0 in (-0.2, 0.0, 0.2):
         for x0 in np.arange(3) * cfg.corridor.length / 3:
             V, _ = fly_path(rig, train, x0, y0, lambda t: 0.0, cfg.speed, 3.0)
-            straight[(y0, x0)] = V[100:]
+            straight[(y0, x0)] = V[skip:]
     decoder.set_baseline(np.concatenate([v for (y, _), v in straight.items() if y == 0]).mean(0))
     cal = pd.DataFrame([dict(y=y, x0=x0, yaw_estimate=np.mean([decoder(v)[2] for v in V]))
                         for (y, x0), V in straight.items()])
@@ -297,7 +294,7 @@ def main(cfg: DictConfig) -> None:
         crashes_with_torque=scores[scores.torque != 0].set_index("controller").crashed.to_dict(),
         total_s=round(time.time() - t0, 1),
     )
-    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, default=str))
+    save_meta(out_dir, meta)
     with pd.option_context("display.width", 200, "display.precision", 3):
         print(scores.to_string(index=False))
     print({k_: meta[k_] for k_ in ("b_deg_s_per_width", "crashes", "crashes_with_torque",
@@ -306,4 +303,5 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    rewrite_index_flag()
     main()

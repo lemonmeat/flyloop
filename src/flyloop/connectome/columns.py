@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import itertools
 import json
-import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -64,9 +64,8 @@ def flyvis_offsets(pairs) -> pd.DataFrame:
     """Synapse-weighted mean (du, dv) = target - source from flyvis's connectome."""
     import flyvis
 
-    path = os.path.join(os.path.dirname(flyvis.__file__), "connectome",
-                        "fib25-fib19_v2.2.json")
-    edges = {(e["src"], e["tar"]): e for e in json.load(open(path))["edges"]}
+    path = Path(flyvis.__file__).parent / "connectome" / "fib25-fib19_v2.2.json"
+    edges = {(e["src"], e["tar"]): e for e in json.loads(path.read_text(encoding="utf-8"))["edges"]}
     rows = []
     for src, tar in pairs:
         e = edges.get((src, tar))
@@ -81,7 +80,8 @@ def flyvis_offsets(pairs) -> pd.DataFrame:
 
 def _hex_xy(u, v):
     """flyvis hex coordinates -> regular-hexagon cartesian (flyvis hex_to_pixel)."""
-    return np.stack([1.5 * np.asarray(v), -np.sqrt(3) * (np.asarray(u) + np.asarray(v) / 2)], -1)
+    u, v = np.asarray(u), np.asarray(v)
+    return np.stack([1.5 * v, -np.sqrt(3) * (u + v / 2)], -1)
 
 
 def hex_round(u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

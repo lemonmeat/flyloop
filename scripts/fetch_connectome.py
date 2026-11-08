@@ -1,10 +1,10 @@
 """Download and cache the T4/T5 -> HS/VS and LPi circuit from neuPrint.
 
 Needs NEUPRINT_APPLICATION_CREDENTIALS (in the environment or the repo's .env).
-Run on the Mac or the Adroit login node (compute nodes may lack internet).
+Needs internet access: on a cluster, run it on a login node.
 
-    python scripts/fetch_connectome.py            # skip if already cached
-    python scripts/fetch_connectome.py --force    # re-query
+    python tasks.py connectome            # skip if already cached
+    python tasks.py connectome --force    # re-query
 """
 
 import argparse

@@ -1,11 +1,12 @@
 # Closed-loop stabilization: constant torque about yaw (horizontal, HS), pitch and
 # roll (vertical, VS); controls; T4/T5 silencing; optomotor following; gain scan.
-# Run: python scripts/run_closedloop.py [key=value ...]
+# Run: python tasks.py run closedloop [key=value ...]
+
+defaults:
+  - common
+  - _self_
 
 sweep: closedloop
-index: 0
-seed: 0
-out_root: ${oc.env:FLYLOOP_RUNS,runs}
 
 models: [flow/0000/000, flow/0000/001]
 dt: 0.01
@@ -16,8 +17,9 @@ eyes:
 
 lptc:
   source: connectome   # connectome or simple
-  tau_lptc: 0.01
-  tau_lpi: 0.01
+  preset: simple       # LPTC/LPi time constants: simple (10 ms) or literature (3 ms)
+  tau_lptc: null       # s; set to override the preset
+  tau_lpi: null
   g_exc: 1.0
   g_inh: 1.0
 
@@ -53,12 +55,3 @@ t_score: 2.0           # last t_score seconds are scored
 vision_conditions: [intact, T4_only, T5_only, silenced]
 optomotor_omega_deg_s: 60.0
 gain_scan_kd: [0.5, 1.0, 1.5, 2.0]   # yaw torque, intact
-
-sweep_list: []
-
-hydra:
-  run:
-    dir: ${out_root}/${sweep}/${index}_${seed}
-  output_subdir: .hydra
-  job:
-    chdir: false

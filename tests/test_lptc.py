@@ -43,7 +43,32 @@ def test_time_constant():
     assert v[hs] == pytest.approx(0.5 * (1 - np.exp(-1)), rel=0.05)
 
 
-# --- connectome weights (need the neuPrint cache: scripts/fetch_connectome.py) ---
+@pytest.mark.parametrize("preset", ["simple", "literature"])
+def test_one_frame_step_is_exact_at_frame_rate(preset):
+    """At the closed-loop frame rate (dt = 10 ms) one frame of a step input
+    reaches 1 - exp(-dt/tau) of the final value: the layer low-passes even
+    when tau <= dt (forward Euler clipped to 1 jumped straight to it)."""
+    w = LPTCWeights.simple()
+    params = LPTCParams.from_config({"preset": preset})
+    layer = LPTCLayer(w, dt=0.01, params=params)
+    hs = w.index("HS")[0]
+    one = _drive(layer, ["T4a"], n_frames=1)[hs]
+    final = _drive(layer, ["T4a"], n_frames=200)[hs]
+    assert final == pytest.approx(0.5, abs=1e-3)
+    assert one == pytest.approx(final * (1 - np.exp(-0.01 / params.tau_lptc)), rel=1e-4)
+
+
+def test_params_from_config():
+    assert LPTCParams.from_config({}).tau_lptc == pytest.approx(0.010)
+    lit = LPTCParams.from_config({"preset": "literature", "g_inh": 0.5})
+    assert (lit.tau_lptc, lit.tau_lpi, lit.g_inh) == pytest.approx((0.003, 0.003, 0.5))
+    assert LPTCParams.from_config({"preset": "literature", "tau_lpi": 0.02,
+                                   "tau_lptc": None}).tau_lpi == pytest.approx(0.02)
+    with pytest.raises(ValueError):
+        LPTCParams.from_config({"preset": "nope"})
+
+
+# --- connectome weights (need the neuPrint cache: python tasks.py connectome) ---
 
 @pytest.fixture(scope="module")
 def connectome_weights():

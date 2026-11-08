@@ -2,30 +2,34 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Literal, Sequence
+from typing import Literal
 
 import numpy as np
 import torch
 
-import flyloop  # noqa: F401  (sets FLYVIS_ROOT_DIR before flyvis is imported)
+import flyloop  # configures flyvis (root dir, device) before it is imported
 
 T4T5 = ("T4a", "T4b", "T4c", "T4d", "T5a", "T5b", "T5c", "T5d")
 
 
-def set_flyvis_device(device: str | torch.device) -> torch.device:
-    """Point flyvis (and torch's default device) at `device`.
-
-    flyvis picks cuda or cpu at import and allocates its stimulus buffers on
-    torch's default device, so this is process-global. Call it before
-    constructing a FlyvisModel.
-    """
-    import flyvis
-
-    device = torch.device(device)
-    torch.set_default_device(device)
-    flyvis.device = device
-    return device
+def _check_device(device: torch.device) -> None:
+    """Fail loudly if the network is not on the device FLYLOOP_DEVICE asked for."""
+    want = flyloop.DEVICE
+    if want == "auto" or device.type == want:
+        return
+    if want == "cpu":
+        raise RuntimeError(
+            f"FLYLOOP_DEVICE=cpu, but flyvis runs on {device}: CUDA was initialized "
+            "before flyloop was imported. Set FLYLOOP_DEVICE before starting Python "
+            "(python tasks.py run <script> --device cpu) and import flyloop first."
+        )
+    raise RuntimeError(
+        f"FLYLOOP_DEVICE={want}, but flyvis runs on {device}: torch sees no CUDA GPU "
+        f"(torch {torch.__version__}, built with CUDA {torch.version.cuda}). Install a "
+        "CUDA build of torch or use --device auto/cpu."
+    )
 
 
 @dataclass
@@ -86,6 +90,7 @@ class FlyvisModel:
         self.network = self.view.init_network(checkpoint=checkpoint)
         self.network.eval()
         self.device = next(self.network.parameters()).device
+        _check_device(self.device)
         self.set_cell_types(cell_types)
 
     # --- readout indices ---------------------------------------------------------
@@ -123,22 +128,44 @@ class FlyvisModel:
         if frames.ndim == 3:
             frames = frames[None]
         if frames.ndim != 4:
-            raise ValueError("frames must be (n_frames, 1, hexals) or (batch, n_frames, 1, hexals)")
+            raise ValueError(
+                "frames must be (n_frames, 1, hexals) or (batch, n_frames, 1, hexals)")
         return frames, t_pre
 
     @torch.no_grad()
     def init_state(self, batch_size: int = 1, first_frame: torch.Tensor | None = None):
         """Initial network state according to `initial_state`.
 
+        The same states as flyvis's Network.steady_state and fade_in_state, but
+        stepped with bounded memory: those keep every intermediate state, including
+        edge-level tensors (about 20 GB for 16 stimuli over 1 s at dt = 5 ms).
+
         first_frame: (batch, 1, hexals), needed for "fade_in".
         """
+        if self.initial_state not in ("steady", "fade_in", "none"):
+            raise ValueError(f"unknown initial_state {self.initial_state!r}")
+        n = int(self.t_init / self.dt) if self.t_init and self.t_init > 0 else 0
+        if self.initial_state == "none" or n == 0:
+            return None
         if self.initial_state == "steady":
-            return self.network.steady_state(self.t_init, self.dt, batch_size, value=0.5)
-        if self.initial_state == "fade_in":
-            if first_frame is None:
-                raise ValueError("fade_in needs the first frame")
-            return self.network.fade_in_state(self.t_init, self.dt, first_frame)
-        return None
+            stim = self.network.stimulus
+            stim.zero(batch_size, 1)
+            stim.add_pre_stim(0.5)
+            x = stim()[:, 0].clone()  # uniform grey: the same input on every frame
+            params = self._params()
+            state = self.network._initial_state(params, batch_size)
+            for _ in range(n):
+                state = self.network._next_state(params, state, x, self.dt)
+            return state
+        if first_frame is None:
+            raise ValueError("fade_in needs the first frame")
+        first = torch.as_tensor(first_frame, dtype=torch.float32, device=self.device)
+        ramp = torch.linspace(0, 1, n, device=self.device)[None, :, None, None]
+        frames = ramp * (first[:, None] - 0.5) + 0.5  # contrast ramp, (batch, n, 1, hexals)
+        state = None
+        for k in range(0, n, 100):
+            state = self._integrate(frames[:, k : k + 100], state, lambda act: None)
+        return state
 
     @torch.no_grad()
     def simulate(

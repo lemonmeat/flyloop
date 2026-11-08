@@ -1,17 +1,28 @@
-"""Project tasks that work the same on macOS, Windows and Linux (standard library only).
+"""Project tasks: one entry point, the same on macOS, Windows and Linux.
 
-    python tasks.py env                      # .venv (Python 3.10) + pretrained flyvis models
-    python tasks.py test [pytest args]
-    python tasks.py connectome               # fetch the neuPrint cache (token in .env)
-    python tasks.py closedloop [overrides]   # also: corridor, tuning, bench
-    python tasks.py run <script> [overrides] # any scripts/run_<name>.py or scripts/<name>.py
-    python tasks.py submit <sweep> [--res cpu] [--time 02:00:00] [--array 0-3]
-                           [--sbatch-args "..."] [--dry-run] [overrides]
-    python tasks.py status | logs [--log FILE] | pull [--sweep NAME]
+Setup
+    python tasks.py env [--conda] [--extras video,flybody]
+                                   create the environment, download the flyvis models
+    python tasks.py models         download the pretrained flyvis models (if missing)
+    python tasks.py connectome [--force]
+                                   fetch the neuPrint connectome cache (token in .env)
 
-Any Python 3.8+ can run this file; experiment scripts run with the project's own
-interpreter (.venv, or the active conda env on Adroit where there is no .venv).
-On macOS `make <target>` calls the same functions (see Makefile).
+Work
+    python tasks.py test [pytest args] [--device auto|cpu|cuda]
+    python tasks.py run <script> [overrides] [--device auto|cpu|cuda]
+        <script> names scripts/run_<script>.py or scripts/<script>.py (e.g. closedloop);
+        `python tasks.py run` lists them. Overrides are Hydra key=value pairs.
+
+Slurm cluster (settings in .env, see .env.example)
+    python tasks.py submit <script> [--res cpu|gpu] [--time HH:MM:SS] [--array 0-3]
+                           [--sbatch-args="..."] [--dry-run] [overrides]
+    python tasks.py status
+    python tasks.py logs [--log FILE]
+    python tasks.py pull [--sweep NAME]
+
+This file needs only the Python standard library (any Python 3.8+). Scripts run
+with the project interpreter: .venv if it exists, else the Python running this file
+(for example an activated conda environment).
 """
 
 from __future__ import annotations
@@ -29,27 +40,46 @@ ROOT = Path(__file__).resolve().parent
 VENV = ROOT / ".venv"
 WINDOWS = os.name == "nt"
 PYTHON_VERSION = "3.10"
-FLYVIS_ROOT_DIR = Path(os.environ.get("FLYVIS_ROOT_DIR", ROOT / "data" / "flyvis"))
+FLYVIS_ROOT_DIR = Path(os.environ.get("FLYVIS_ROOT_DIR", ROOT / "data" / "flyvis")).expanduser()
 TORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu126"
-
-# Adroit (ssh host alias `adroit`, see README)
-REMOTE = os.environ.get("REMOTE", "adroit")
-REMOTE_USER = os.environ.get("REMOTE_USER", "ag0226")
-REMOTE_CODE = os.environ.get("REMOTE_CODE", "~/cos597z")
-REMOTE_ROOT = os.environ.get("REMOTE_ROOT",
-                             f"/scratch/network/{REMOTE_USER}/flyvis-closedloop")
-REMOTE_RUNS = f"{REMOTE_ROOT}/runs"
-RESOURCES = {  # smaller requests are scheduled sooner
+DEVICES = ("auto", "cpu", "cuda")  # as flyloop.DEVICES
+RESOURCES = {  # sbatch requests for --res; smaller requests are scheduled sooner
     "cpu": "--cpus-per-task=4 --mem=8G",
     "gpu": "--gres=gpu:1 --cpus-per-task=2 --mem=8G",
-    "mig": "--gres=gpu:3g.20gb:1 --cpus-per-task=2 --mem=8G",
-    "a100": "--gres=gpu:nvidia_a100:1 --cpus-per-task=4 --mem=16G",
 }
-EXPERIMENTS = {"tuning": "run_openloop_tuning", "bench": "benchmark_speed",
-               "closedloop": "run_closedloop", "corridor": "run_corridor"}
+RESULT_SUFFIXES = (".csv", ".json", ".png")  # what `pull` brings back
 
 
 # --- helpers ---------------------------------------------------------------------
+
+def read_dotenv(path: Path = ROOT / ".env") -> dict:
+    """KEY=value lines of the repo's .env (gitignored); comments and blanks skipped."""
+    values = {}
+    if not path.is_file():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        values[key] = value
+    return values
+
+
+DOTENV = read_dotenv()
+
+
+def setting(name: str, default: str | None = None) -> str | None:
+    """A setting from the environment, else from .env, else the default."""
+    return os.environ.get(name) or DOTENV.get(name) or default
+
 
 def venv_bin(name: str) -> Path:
     exe = name + (".exe" if WINDOWS else "")
@@ -57,175 +87,320 @@ def venv_bin(name: str) -> Path:
 
 
 def project_python() -> str:
-    """The .venv interpreter, else the current one (an activated conda env)."""
+    """The .venv interpreter, else the current one (e.g. an activated conda env)."""
     py = venv_bin("python")
     return str(py) if py.exists() else sys.executable
 
 
-def sh(cmd: list[str], **kw) -> None:
+def sh(cmd: list, env: dict | None = None) -> None:
+    """Run a command in the repo root; exit with its code if it fails."""
     print("+", " ".join(shlex.quote(str(c)) for c in cmd), flush=True)
-    r = subprocess.run([str(c) for c in cmd], cwd=ROOT, check=False, **kw)
+    r = subprocess.run([str(c) for c in cmd], cwd=ROOT, env=env, check=False)
     if r.returncode:
         sys.exit(r.returncode)
 
 
-def uv_command() -> list[str] | None:
-    """uv as a command (on PATH or as a module of this Python), else None."""
-    if shutil.which("uv"):
-        return ["uv"]
-    probe = subprocess.run([sys.executable, "-m", "uv", "--version"], capture_output=True,
-                           check=False)
-    if probe.returncode == 0:
-        return [sys.executable, "-m", "uv"]
-    return None
+def git(*args: str) -> str:
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True,
+                          check=True).stdout.strip()
 
 
-def has_nvidia_gpu() -> bool:
-    if not shutil.which("nvidia-smi"):
-        return False
-    return subprocess.run(["nvidia-smi", "-L"], capture_output=True, check=False).returncode == 0
+def strip_dashes(args: list) -> list:
+    """Drop a leading `--` (separator some users put before pass-through arguments)."""
+    return args[1:] if args[:1] == ["--"] else args
+
+
+def split_device(args: list) -> tuple:
+    """Take `--device X` (or --device=X) out of args; return (args, child env)."""
+    out, device = [], None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--device":
+            if i + 1 == len(args):
+                sys.exit(f"--device needs a value: {', '.join(DEVICES)}")
+            device, i = args[i + 1], i + 2
+            continue
+        if a.startswith("--device="):
+            device = a.split("=", 1)[1]
+        else:
+            out.append(a)
+        i += 1
+    if device is None:
+        return out, None
+    if device not in DEVICES:
+        sys.exit(f"--device must be one of {', '.join(DEVICES)}, got {device!r}")
+    return out, {**os.environ, "FLYLOOP_DEVICE": device}
 
 
 def find_script(name: str) -> Path:
-    for cand in (f"run_{name}.py", f"{name}.py", name):
-        p = ROOT / "scripts" / cand
-        if p.is_file():
-            return p
-    p = ROOT / name
-    if p.is_file():
-        return p
-    sys.exit(f"no scripts/run_{name}.py or scripts/{name}.py")
+    """scripts/run_<name>.py or scripts/<name>.py; also accepts those file names."""
+    stem = Path(name).name
+    if stem.endswith(".py"):
+        stem = stem[:-3]
+    for cand in (f"run_{stem}.py", f"{stem}.py"):
+        path = ROOT / "scripts" / cand
+        if path.is_file():
+            return path
+    sys.exit(f"no scripts/run_{stem}.py or scripts/{stem}.py; see `python tasks.py run`")
 
 
-def ssh(command: str, **kw) -> subprocess.CompletedProcess:
-    print(f"+ ssh {REMOTE} {shlex.quote(command)}", flush=True)
-    return subprocess.run(["ssh", REMOTE, command], check=False, **kw)
+def experiment_name(script: Path) -> str:
+    """The config and output-folder name of a script: run_closedloop.py -> closedloop."""
+    stem = script.stem
+    return stem[len("run_"):] if stem.startswith("run_") else stem
 
 
-# --- tasks -----------------------------------------------------------------------
+def uv_command() -> list | None:
+    """uv as a command (on PATH or as a module of this Python), else None."""
+    if shutil.which("uv"):
+        return [shutil.which("uv")]
+    probe = subprocess.run([sys.executable, "-m", "uv", "--version"], capture_output=True,
+                           check=False)
+    return [sys.executable, "-m", "uv"] if probe.returncode == 0 else None
 
-def task_env(args) -> None:
-    """Create .venv with Python 3.10 (uv) or the conda env (no uv, conda present),
-    install flyloop editable, and download the pretrained flyvis models."""
-    uv = uv_command()
-    if uv is None and shutil.which("conda") and not args.uv:
-        sh(["conda", "env", "update", "-f", "environment.yml", "--prune"]
-           if subprocess.run(["conda", "run", "-n", "flyloop", "python", "-V"],
-                             capture_output=True, check=False).returncode == 0
-           else ["conda", "env", "create", "-f", "environment.yml"])
-        print("\nconda activate flyloop, then: python tasks.py models")
+
+def has_nvidia_gpu() -> bool:
+    smi = shutil.which("nvidia-smi")
+    return bool(smi) and subprocess.run([smi, "-L"], capture_output=True,
+                                        check=False).returncode == 0
+
+
+# --- setup -----------------------------------------------------------------------
+
+def task_env(argv: list) -> None:
+    """Create .venv (Python 3.10, via uv) or the conda env, install flyloop editable
+    with the dev extra, and download the pretrained flyvis models."""
+    p = argparse.ArgumentParser(prog="tasks.py env", description=task_env.__doc__)
+    p.add_argument("--conda", action="store_true",
+                   help="conda env 'flyloop' from environment.yml instead of .venv")
+    p.add_argument("--extras", default="",
+                   help="comma-separated optional dependencies: video, flybody")
+    a = p.parse_args(argv)
+    extras = ["dev", *(e.strip() for e in a.extras.split(",") if e.strip())]
+    spec = f".[{','.join(extras)}]"
+
+    if a.conda:
+        conda = shutil.which("conda")
+        if conda is None:
+            sys.exit("conda not found on PATH")
+        exists = subprocess.run([conda, "run", "-n", "flyloop", "python", "-V"],
+                                capture_output=True, check=False).returncode == 0
+        sh([conda, "env", "update", "-f", "environment.yml", "--prune"] if exists
+           else [conda, "env", "create", "-f", "environment.yml"])
+        if len(extras) > 1:
+            sh([conda, "run", "-n", "flyloop", "python", "-m", "pip", "install", "-e", spec])
+        print("\nNext: conda activate flyloop, then python tasks.py models")
         return
+
+    uv = uv_command()
     if uv is None:
         sh([sys.executable, "-m", "pip", "install", "--user", "--upgrade", "uv"])
         uv = [sys.executable, "-m", "uv"]
     if not venv_bin("python").exists():
-        sh([*uv, "venv", "--python", PYTHON_VERSION, str(VENV)])
-    install = [*uv, "pip", "install", "--python", str(venv_bin("python")), "-e", ".[dev]"]
+        sh([*uv, "venv", "--python", PYTHON_VERSION, VENV])
+    install = [*uv, "pip", "install", "--python", venv_bin("python"), "-e", spec]
     if WINDOWS and has_nvidia_gpu():
-        # PyPI's torch wheels for Windows are CPU-only; Linux wheels already ship CUDA
-        install += ["--extra-index-url", TORCH_CUDA_INDEX,
-                    "--index-strategy", "unsafe-best-match"]
+        # PyPI's torch wheels for Windows are CPU-only; the Linux ones already ship CUDA
+        install += ["--extra-index-url", TORCH_CUDA_INDEX, "--index-strategy",
+                    "unsafe-best-match"]
     sh(install)
-    task_models(args)
-    sh([str(venv_bin("python")), "-c",
-        ("import flyloop, torch, flyvis; print('torch', torch.__version__, '| cuda:', "
-         "torch.cuda.is_available(), '| models:', flyloop.FLYVIS_ROOT_DIR)")])
+    task_models([])
+    sh([venv_bin("python"), "-c",
+        "import flyloop, flyvis, torch; print('torch', torch.__version__, '| device:', "
+        "flyvis.device, '| models:', flyloop.FLYVIS_ROOT_DIR)"])
 
 
-def task_models(args) -> None:
+def task_models(argv: list) -> None:
     """Download the pretrained flyvis ensemble into data/flyvis (skipped if present)."""
+    if argv:
+        sys.exit("usage: python tasks.py models")
     if (FLYVIS_ROOT_DIR / "results" / "flow" / "0000" / "000").is_dir():
         print(f"pretrained models already in {FLYVIS_ROOT_DIR}")
         return
-    flyvis = venv_bin("flyvis")
-    cli = [str(flyvis)] if flyvis.exists() else ["flyvis"]
-    sh([*cli, "download-pretrained"], env={**os.environ, "FLYVIS_ROOT_DIR": str(FLYVIS_ROOT_DIR)})
+    cli = venv_bin("flyvis")
+    sh([cli if cli.exists() else shutil.which("flyvis") or "flyvis", "download-pretrained"],
+       env={**os.environ, "FLYVIS_ROOT_DIR": str(FLYVIS_ROOT_DIR)})
 
 
-def task_test(args) -> None:
-    sh([project_python(), "-m", "pytest", "-q", *args.rest])
+def task_connectome(argv: list) -> None:
+    sh([project_python(), ROOT / "scripts" / "fetch_connectome.py", *strip_dashes(argv)])
 
 
-def task_connectome(args) -> None:
-    sh([project_python(), str(ROOT / "scripts" / "fetch_connectome.py"), *args.rest])
+# --- work ------------------------------------------------------------------------
+
+def task_test(argv: list) -> None:
+    args, env = split_device(strip_dashes(argv))
+    sh([project_python(), "-m", "pytest", "-q", *args], env=env)
 
 
-def task_run(args) -> None:
-    sh([project_python(), str(find_script(args.script)), *args.rest])
+def task_run(argv: list) -> None:
+    if not argv or argv[0] in ("-h", "--help"):
+        print("usage: python tasks.py run <script> [overrides] [--device auto|cpu|cuda]\n")
+        print("scripts:")
+        for path in sorted((ROOT / "scripts").glob("*.py")):
+            print(f"  {experiment_name(path):<28}{path.relative_to(ROOT).as_posix()}")
+        return
+    args, env = split_device(strip_dashes(argv[1:]))
+    sh([project_python(), find_script(argv[0]), *args], env=env)
 
 
-def task_experiment(args) -> None:
-    sh([project_python(), str(ROOT / "scripts" / f"{EXPERIMENTS[args.task]}.py"), *args.rest])
+# --- Slurm cluster -----------------------------------------------------------------
+
+def cluster_host(required: bool = True) -> str:
+    host = setting("CLUSTER_HOST")
+    if not host and required:
+        sys.exit("set CLUSTER_HOST (ssh host or alias) in .env or the environment; "
+                 "see .env.example")
+    return host or "<CLUSTER_HOST>"
 
 
-def task_submit(args) -> None:
-    """git push, then on Adroit: git pull and sbatch the script as a job array."""
-    script = find_script(args.sweep).relative_to(ROOT).as_posix()
-    if args.res not in RESOURCES:
-        sys.exit(f"--res must be one of {', '.join(RESOURCES)}")
-    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, check=False,
-                           capture_output=True, text=True).stdout.strip()
-    if dirty and not args.dry_run:
-        sys.exit("commit your changes first (code moves by git only)")
-    array = args.array
-    config = ROOT / "configs" / f"{args.sweep}.yaml"
+def cluster_dirs() -> tuple:
+    """(repo, output) on the cluster: the clone of this repo, and where runs/ and
+    logs/ go (default: the clone)."""
+    repo = setting("CLUSTER_REPO", "~/flyloop")
+    return repo, setting("CLUSTER_OUTPUT", repo)
+
+
+def rpath(path: str) -> str:
+    """A cluster path as one shell word; a leading ~ still means the cluster home."""
+    if path == "~":
+        return '"$HOME"'
+    if path.startswith("~/"):
+        return '"$HOME"/' + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
+def remote_script(lines: list) -> str:
+    """A bash script for `ssh host bash -s`. The braces make bash read all of it
+    before running anything, so no command can swallow the rest from stdin."""
+    body = "\n".join("    " + ln for ln in lines)
+    return f"set -euo pipefail\n{{\n{body}\n}}\n"
+
+
+def ssh_bash(host: str, script: str, **kw) -> subprocess.Popen:
+    """Start bash on the cluster reading `script` from stdin. Sent as bytes, so the
+    line endings stay LF on Windows. Login-shell independent."""
+    if not shutil.which("ssh"):
+        sys.exit("ssh not found on PATH")
+    print(f"+ ssh {host} bash -s <<'EOF'\n{script}EOF", flush=True)
+    proc = subprocess.Popen(["ssh", host, "bash", "-s"], stdin=subprocess.PIPE, **kw)
+    proc.stdin.write(script.encode())
+    proc.stdin.close()
+    return proc
+
+
+def task_submit(argv: list) -> None:
+    """git push, then on the cluster: git pull and sbatch the script as a job array,
+    one array task per sweep_list entry of configs/<script>.yaml."""
+    p = argparse.ArgumentParser(prog="tasks.py submit", description=task_submit.__doc__)
+    p.add_argument("script", help="as for `run`, e.g. closedloop")
+    p.add_argument("--res", choices=RESOURCES, default="gpu", help="resource preset")
+    p.add_argument("--time", default="01:00:00", help="wall-time limit (default 1 h)")
+    p.add_argument("--array", help="array range (default: one task per sweep_list entry)")
+    p.add_argument("--sbatch-args", default="",
+                   help='extra sbatch options, appended last; write --sbatch-args="--x=1 ..."')
+    p.add_argument("--dry-run", action="store_true",
+                   help="print what would run; no push, no ssh")
+    p.add_argument("overrides", nargs="*", help="Hydra overrides (key=value)")
+    a = p.parse_intermixed_args(argv)
+
+    script = find_script(a.script)
+    name = experiment_name(script)
+    array = a.array
     if array is None:
-        n = 1
+        n, config = 1, ROOT / "configs" / f"{name}.yaml"
         if config.exists():
             out = subprocess.run(
                 [project_python(), "-c",
-                 ("import sys; from omegaconf import OmegaConf; "
-                  "c = OmegaConf.load(sys.argv[1]); print(len(c.get('sweep_list') or []))"),
+                 "import sys; from omegaconf import OmegaConf; "
+                 "print(len(OmegaConf.load(sys.argv[1]).get('sweep_list') or []))",
                  str(config)], capture_output=True, text=True, check=True).stdout
-            n = max(int(out.strip()), 1)
+            n = max(int(out), 1)
         array = f"0-{n - 1}"
-    remote = (f"cd {REMOTE_CODE} && git pull --ff-only && mkdir -p {REMOTE_ROOT}/logs && "
-              f"sbatch --array={array} --job-name={shlex.quote(args.sweep)} "
-              f"{RESOURCES[args.res]} --time={args.time} {args.sbatch_args} "
-              f"slurm/array_template.slurm {script} "
-              + " ".join(shlex.quote(a) for a in args.rest))
-    if args.dry_run:
-        print(f"would run: git push; ssh {REMOTE} {shlex.quote(remote)}")
+
+    host = cluster_host(required=not a.dry_run)
+    repo, output = cluster_dirs()
+    if not a.dry_run:
+        if git("status", "--porcelain"):
+            sys.exit("commit your changes first: jobs run the pushed commit")
+        sh(["git", "push"])
+    sha = git("rev-parse", "HEAD")
+    sbatch = ["sbatch", f"--array={array}", f"--job-name={shlex.quote(name)}",
+              f"--time={a.time}", RESOURCES[a.res],
+              "--output=" + rpath(f"{output}/logs/%x_%A_%a.out"),
+              "--export=ALL,FLYLOOP_RUNS=" + rpath(f"{output}/runs")]
+    mail = setting("CLUSTER_MAIL")
+    if mail:
+        sbatch += ["--mail-type=BEGIN,END,FAIL", f"--mail-user={shlex.quote(mail)}"]
+    sbatch += [setting("CLUSTER_SBATCH_ARGS", ""), a.sbatch_args,
+               "slurm/array_template.slurm", script.relative_to(ROOT).as_posix(),
+               *map(shlex.quote, a.overrides)]
+    script_text = remote_script([
+        f"cd {rpath(repo)}",
+        "git pull --ff-only",
+        f'if [ "$(git rev-parse HEAD)" != {sha} ]; then',
+        f'    echo "cluster checkout is at $(git rev-parse --short HEAD), not {sha[:7]}:'
+        ' is the same branch checked out there?" >&2',
+        "    exit 1",
+        "fi",
+        f"mkdir -p {rpath(output + '/logs')} {rpath(output + '/runs')}",
+        " ".join(s for s in sbatch if s),
+    ])
+    if a.dry_run:
+        print(f"would run: git push; ssh {host} bash -s <<'EOF'\n{script_text}EOF")
         return
-    sh(["git", "push"])
-    sys.exit(ssh(remote).returncode)
+    sys.exit(ssh_bash(host, script_text).wait())
 
 
-def task_status(args) -> None:
-    sys.exit(ssh(
-        f'squeue -u {REMOTE_USER} -o "%.12i %.18j %.9T %.10M %.10l %R"; echo; '
-        f"sacct -u {REMOTE_USER} -S now-1days -X "
-        "--format=JobID%16,JobName%18,State%11,Elapsed,ExitCode | tail -n 15").returncode)
+def task_status(argv: list) -> None:
+    if argv:
+        sys.exit("usage: python tasks.py status")
+    sys.exit(ssh_bash(cluster_host(), remote_script([
+        'squeue -u "$USER" -o "%.12i %.18j %.9T %.10M %.10l %R"',
+        "echo",
+        'sacct -u "$USER" -S now-1days -X '
+        "--format=JobID%16,JobName%18,State%11,Elapsed,ExitCode | tail -n 15",
+    ])).wait())
 
 
-def task_logs(args) -> None:
-    name = shlex.quote(args.log) if args.log else "$(ls -t | head -1)"
-    sys.exit(ssh(f'cd {REMOTE_ROOT}/logs && f={name} && echo "== $f" && tail -n 40 "$f"')
-             .returncode)
+def task_logs(argv: list) -> None:
+    p = argparse.ArgumentParser(prog="tasks.py logs", description="tail a job log")
+    p.add_argument("--log", help="log file name (default: the newest)")
+    a = p.parse_args(argv)
+    _, output = cluster_dirs()
+    sys.exit(ssh_bash(cluster_host(), remote_script([
+        f"cd {rpath(output + '/logs')}",
+        f"f={shlex.quote(a.log) if a.log else '$(ls -t | head -n 1)'}",
+        '[ -n "$f" ] || { echo "no logs yet" >&2; exit 1; }',
+        'echo "== $f"',
+        'tail -n 40 "$f"',
+    ])).wait())
 
 
-def task_pull(args) -> None:
-    """Bring back small results only (csv, json, png) into runs/."""
-    sub = f"/{args.sweep}" if args.sweep else ""
-    dest = ROOT / "runs" / (args.sweep or "")
-    dest.mkdir(parents=True, exist_ok=True)
-    if shutil.which("rsync"):  # incremental (macOS, Linux)
-        sh(["rsync", "-avz", "--prune-empty-dirs", "--include=*/", "--include=*.csv",
-            "--include=*.json", "--include=*.png", "--exclude=*",
-            f"{REMOTE}:{REMOTE_RUNS}{sub}/", f"{dest}/"])
-        return
-    # no rsync (Windows): stream a tarball of the matching files over ssh
-    remote = (f"cd {REMOTE_RUNS}{sub} && find . -type f \\( -name '*.csv' -o -name '*.json' "
-              "-o -name '*.png' \\) -print0 | tar --null -T - -czf -")
-    print(f"+ ssh {REMOTE} {shlex.quote(remote)} | extract into {dest}", flush=True)
-    proc = subprocess.Popen(["ssh", REMOTE, remote], stdout=subprocess.PIPE)
+def task_pull(argv: list) -> None:
+    """Copy the small results (csv, json, png) from the cluster's runs/ into runs/."""
+    p = argparse.ArgumentParser(prog="tasks.py pull", description=task_pull.__doc__)
+    p.add_argument("--sweep", help="only this sweep's folder, e.g. closedloop")
+    a = p.parse_args(argv)
+    _, output = cluster_dirs()
+    remote = f"{output}/runs" + (f"/{a.sweep}" if a.sweep else "")
+    dest = ROOT / "runs" / (a.sweep or "")
+    names = " -o ".join(f"-name '*{s}'" for s in RESULT_SUFFIXES)
+    proc = ssh_bash(cluster_host(), remote_script([
+        f"cd {rpath(remote)}",
+        f"find . -type f \\( {names} \\) -print0 | tar --null -T - -czf -",
+    ]), stdout=subprocess.PIPE)
     n = 0
-    with tarfile.open(fileobj=proc.stdout, mode="r|gz") as tar:
-        for member in tar:
-            if member.isfile():
-                kw = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
-                tar.extract(member, dest, **kw)
-                n += 1
+    try:
+        with tarfile.open(fileobj=proc.stdout, mode="r|gz") as tar:
+            kw = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+            for member in tar:
+                if member.isfile() and member.name.endswith(RESULT_SUFFIXES):
+                    tar.extract(member, dest, **kw)
+                    n += 1
+    except tarfile.ReadError:
+        pass  # nothing was sent; ssh or the remote command reports why
     if proc.wait():
         sys.exit(proc.returncode)
     print(f"{n} files -> {dest}")
@@ -233,77 +408,23 @@ def task_pull(args) -> None:
 
 # --- command line ----------------------------------------------------------------
 
-def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = p.add_subparsers(dest="task", required=True)
+TASKS = {
+    "env": task_env, "models": task_models, "connectome": task_connectome,
+    "test": task_test, "run": task_run,
+    "submit": task_submit, "status": task_status, "logs": task_logs, "pull": task_pull,
+}
 
-    e = sub.add_parser("env", help="create the environment and download models")
-    e.add_argument("--uv", action="store_true", help="use uv even where conda is present")
-    e.set_defaults(func=task_env)
-    sub.add_parser("models", help="download pretrained flyvis models").set_defaults(
-        func=task_models)
-    for name, func, hlp in [("test", task_test, "pytest"),
-                            ("connectome", task_connectome, "fetch the neuPrint cache")]:
-        s = sub.add_parser(name, help=hlp)
-        s.add_argument("rest", nargs=argparse.REMAINDER)
-        s.set_defaults(func=func)
-    for name, script in EXPERIMENTS.items():
-        s = sub.add_parser(name, help=f"scripts/{script}.py")
-        s.add_argument("rest", nargs=argparse.REMAINDER, help="Hydra overrides")
-        s.set_defaults(func=task_experiment)
-    r = sub.add_parser("run", help="any script in scripts/")
-    r.add_argument("script")
-    r.add_argument("rest", nargs=argparse.REMAINDER)
-    r.set_defaults(func=task_run)
 
-    s = sub.add_parser("submit", help="git push and sbatch a job array on Adroit")
-    s.add_argument("sweep", help="scripts/run_<sweep>.py, array over configs/<sweep>.yaml")
-    s.add_argument("--res", default="gpu", help=f"one of {', '.join(RESOURCES)}")
-    s.add_argument("--time", default="01:00:00")
-    s.add_argument("--array", help="default: one index per sweep_list entry")
-    s.add_argument("--sbatch-args", default="",
-                   help='appended last, overrides --res; write --sbatch-args="--x=1 ..."')
-    s.add_argument("--dry-run", action="store_true",
-                   help="print the remote command; no push, no ssh")
-    # not REMAINDER: that would swallow the options after the sweep name
-    s.add_argument("rest", nargs="*", help="Hydra overrides")
-    s.set_defaults(func=task_submit)
-
-    sub.add_parser("status", help="queue and last day's jobs").set_defaults(func=task_status)
-    lg = sub.add_parser("logs", help="tail the newest log")
-    lg.add_argument("--log", help="log file name in the logs folder")
-    lg.set_defaults(func=task_logs)
-    pl = sub.add_parser("pull", help="copy *.csv, *.json, *.png from Adroit into runs/")
-    pl.add_argument("--sweep", help="only this sweep's folder")
-    pl.set_defaults(func=task_pull)
-
+def main(argv: list | None = None) -> None:
     argv = sys.argv[1:] if argv is None else list(argv)
-    # Pass-through tasks forward their arguments verbatim (pytest options such as
-    # -k, Hydra overrides); argparse's REMAINDER mangles arguments starting with -.
-    passthrough = {"test": task_test, "connectome": task_connectome,
-                   **{name: task_experiment for name in EXPERIMENTS}}
-    if argv and argv[0] in passthrough and not {"-h", "--help"} & set(argv[1:2]):
-        rest = argv[1:]
-        passthrough[argv[0]](argparse.Namespace(task=argv[0], rest=_strip_dashes(rest)))
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
         return
-    if argv[:1] == ["run"] and len(argv) > 1 and argv[1] not in ("-h", "--help"):
-        task_run(argparse.Namespace(task="run", script=argv[1],
-                                    rest=_strip_dashes(argv[2:])))
-        return
-    # submit: options anywhere, everything else is a Hydra override
-    args, unknown = p.parse_known_args(argv)
-    if unknown:
-        if args.task != "submit" or any(u.startswith("-") for u in unknown):
-            p.error(f"unrecognized arguments: {' '.join(unknown)}")
-        args.rest = [*args.rest, *unknown]
-    if getattr(args, "rest", None):
-        args.rest = _strip_dashes(args.rest)
-    args.func(args)
-
-
-def _strip_dashes(rest: list[str]) -> list[str]:
-    return rest[1:] if rest[:1] == ["--"] else rest
+    task = TASKS.get(argv[0])
+    if task is None:
+        sys.exit(f"unknown task {argv[0]!r}; tasks: {', '.join(TASKS)} "
+                 "(python tasks.py --help)")
+    task(argv[1:])
 
 
 if __name__ == "__main__":

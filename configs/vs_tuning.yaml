@@ -1,10 +1,12 @@
 # VS tuning: vertical motion and rotation about horizontal axes (roll, pitch, and
-# every axis in between). Run: python scripts/run_vs_tuning.py [key=value ...]
+# every axis in between).
+# Run: python tasks.py run vs_tuning [key=value ...]
+
+defaults:
+  - common
+  - _self_
 
 sweep: vs_tuning
-index: 0
-seed: 0
-out_root: ${oc.env:FLYLOOP_RUNS,runs}
 
 model:
   name: flow/0000/000
@@ -16,8 +18,9 @@ eyes:
 
 lptc:
   sources: [connectome, simple]
-  tau_lptc: 0.01
-  tau_lpi: 0.01
+  preset: simple       # LPTC/LPi time constants: simple (10 ms) or literature (3 ms)
+  tau_lptc: null       # s; set to override the preset
+  tau_lpi: null
   g_exc: 1.0
   g_inh: 1.0
 
@@ -38,12 +41,3 @@ rotation:
 
 t_settle: 0.5
 t_move: 1.5            # last half averaged
-
-sweep_list: []
-
-hydra:
-  run:
-    dir: ${out_root}/${sweep}/${index}_${seed}
-  output_subdir: .hydra
-  job:
-    chdir: false

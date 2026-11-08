@@ -63,7 +63,16 @@ class LPTCWeights:
     # --- constructors ----------------------------------------------------------------
 
     @classmethod
-    def simple(cls, lattice: HexLattice | None = None) -> "LPTCWeights":
+    def from_source(cls, source: str, lattice: HexLattice | None = None) -> LPTCWeights:
+        """Weights by name: "connectome" (from_connectome) or "simple" (simple)."""
+        if source == "connectome":
+            return cls.from_connectome(lattice)
+        if source == "simple":
+            return cls.simple(lattice)
+        raise ValueError(f"unknown LPTC weight source {source!r}; use connectome or simple")
+
+    @classmethod
+    def simple(cls, lattice: HexLattice | None = None) -> LPTCWeights:
         lattice = lattice or HexLattice()
         n = lattice.n_hexals
         sub = {s: i for i, s in enumerate(T4T5)}
@@ -78,7 +87,7 @@ class LPTCWeights:
 
     @classmethod
     def from_connectome(cls, lattice: HexLattice | None = None,
-                        min_lpi_synapses: int = 5) -> "LPTCWeights":
+                        min_lpi_synapses: int = 5) -> LPTCWeights:
         """Build weights from the cached optic-lobe:v1.1 tables.
 
         Args:
@@ -94,6 +103,7 @@ class LPTCWeights:
         lattice = lattice or HexLattice()
         neurons = load("neurons")
         homes = C.home_columns(load("t4t5_columns"))
+        n_t4t5 = len(homes)
         align = C.fit_alignment(load("conn_t4_inputs"), load("conn_t5_inputs"),
                                 neurons, homes)
         u, v = align.to_lattice(homes.hex1, homes.hex2)
@@ -134,8 +144,8 @@ class LPTCWeights:
         col = {b: i for i, b in enumerate(lpi_ids)}
         lpi_out = np.zeros((len(cells), len(lpi_ids)))
         o = out[out.bodyId_pre.isin(col)]
-        np.add.at(lpi_out, (o.bodyId_post.map(row).to_numpy(), o.bodyId_pre.map(col).to_numpy()),
-                  o.weight.to_numpy())
+        np.add.at(lpi_out, (o.bodyId_post.map(row).to_numpy(),
+                            o.bodyId_pre.map(col).to_numpy()), o.weight.to_numpy())
         lin = pooled(load("conn_t4t5_lpi"))
         lin = lin[lin.bodyId_post.isin(col)]
         lpi_in = np.zeros((len(lpi_ids), 8, n))
@@ -144,13 +154,13 @@ class LPTCWeights:
 
         nt = neurons.set_index("bodyId").consensusNt
         lpi_sign = np.array([-1.0 if nt.get(b) in INHIBITORY_NT else 1.0 for b in lpi_ids])
-        info = dict(
-            alignment_M=align.M.astype(int).tolist(),
-            alignment_residual=align.residual,
-            t4t5_on_lattice=float(len(homes) / len(C.home_columns(load("t4t5_columns")))),
-            body_ids=dict(zip(cells, map(int, body_ids))),
-            n_lpi_by_type=pd.Series([types[b] for b in lpi_ids]).value_counts().to_dict(),
-        )
+        info = {
+            "alignment_M": align.M.astype(int).tolist(),
+            "alignment_residual": align.residual,
+            "t4t5_on_lattice": float(len(homes) / n_t4t5),
+            "body_ids": dict(zip(cells, map(int, body_ids))),
+            "n_lpi_by_type": pd.Series([types[b] for b in lpi_ids]).value_counts().to_dict(),
+        }
         return cls(cells=cells, exc=exc, lpi_in=lpi_in, lpi_out=lpi_out,
                    lpi_sign=lpi_sign, lpi_types=[types[b] for b in lpi_ids],
                    source="optic-lobe:v1.1", info=info)

@@ -11,36 +11,35 @@
    theta_pref with that prediction (receptive field centre = synapse-weighted
    mean viewing direction of its T4/T5 inputs).
 
-    python scripts/run_vs_tuning.py
-    python scripts/run_vs_tuning.py world.kind=texture world.alpha=2
+    python tasks.py run vs_tuning
+    python tasks.py run vs_tuning world.kind=texture world.alpha=2
 """
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 import hydra
 import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig
+
+from flyloop.eyes import EYE_ORDER, Eyes
+from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights
+from flyloop.lptc.analysis import matched_filter_response, preferred_axis
+from flyloop.metrics import angular_difference
+from flyloop.plotting import CATEGORICAL, GRID, INK, MUTED, SURFACE
+from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
+from flyloop.sim import SphereWorld, VerticalGrating, VisualRig, horizontal_axis
+from flyloop.vision import FlyvisModel
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-from hydra.core.hydra_config import HydraConfig  # noqa: E402
-from omegaconf import DictConfig  # noqa: E402
 
-from flyloop.eyes import EYE_ORDER, Eyes  # noqa: E402
-from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights  # noqa: E402
-from flyloop.lptc.analysis import matched_filter_response, preferred_axis  # noqa: E402
-from flyloop.metrics import angular_difference  # noqa: E402
-from flyloop.runio import apply_sweep, rewrite_index_flag, write_run_metadata  # noqa: E402
-from flyloop.sim import SphereWorld, VerticalGrating, VisualRig, horizontal_axis  # noqa: E402
-from flyloop.vision import FlyvisModel  # noqa: E402
-
-EYE_COLORS = {"right": "#2a78d6", "left": "#eb6834"}  # categorical slots 1, 2
-INK, MUTED, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
+EYE_COLORS = {"right": CATEGORICAL[0], "left": CATEGORICAL[1]}
 
 
 def make_world(cfg) -> SphereWorld:
@@ -60,6 +59,12 @@ def run(rig: VisualRig, world, move, cfg) -> np.ndarray:
         move(world)
         out.append(rig.step(world).lptc)
     return np.concatenate(out, 1)[:, n // 2:].mean(1)
+
+
+def long_rows(v: np.ndarray, source: str, cells: list[str], **labels) -> list[dict]:
+    """One row per eye and cell of responses v (2 eyes, cells), with labels."""
+    return [dict(source=source, cell=c, eye=eye, response=v[e, i], **labels)
+            for e, eye in enumerate(EYE_ORDER) for i, c in enumerate(cells)]
 
 
 def receptive_fields(w: LPTCWeights, eyes: Eyes) -> pd.DataFrame:
@@ -148,7 +153,8 @@ def plot_pref_vs_rf(axes_df, path):
         ax.scatter(x, y, s=36, color=EYE_COLORS[eye], edgecolor=SURFACE, lw=1.5, zorder=3,
                    label=f"{eye} eye: simulated")
     lim = np.array([-180, 180])
-    ax.plot(lim, lim + 90, color=MUTED, lw=1, ls=(0, (2, 2)), label="vertical-motion-only: RF + 90°")
+    ax.plot(lim, lim + 90, color=MUTED, lw=1, ls=(0, (2, 2)),
+            label="vertical-motion-only: RF + 90°")
     ax.set_xlim(*lim)
     ax.set_xlabel("receptive-field azimuth (deg, 0 = ahead, + = left)", color=INK)
     ax.set_ylabel("preferred rotation axis (deg)", color=INK)
@@ -162,9 +168,6 @@ def plot_pref_vs_rf(axes_df, path):
     plt.close(fig)
 
 
-rewrite_index_flag()
-
-
 @hydra.main(config_path="../configs", config_name="vs_tuning", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     cfg = apply_sweep(cfg)
@@ -174,26 +177,24 @@ def main(cfg: DictConfig) -> None:
     model = FlyvisModel(cfg.model.name, dt=dt)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
     eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
-    params = LPTCParams(cfg.lptc.tau_lptc, cfg.lptc.tau_lpi, cfg.lptc.g_exc, cfg.lptc.g_inh)
+    params = LPTCParams.from_config(cfg.lptc)
 
     vertical, axis_rows, axes_tables = [], [], []
     for source in cfg.lptc.sources:
-        w = LPTCWeights.from_connectome() if source == "connectome" else LPTCWeights.simple()
+        w = LPTCWeights.from_source(source)
         rig = VisualRig(eyes, model, LPTCLayer(w, dt, params))
-        long = lambda v, **kw: [dict(source=source, cell=c, eye=eye, response=v[e, i], **kw)  # noqa: E731
-                                for e, eye in enumerate(EYE_ORDER) for i, c in enumerate(w.cells)]
 
         for label, sign in (("down", -1), ("up", +1)):
             v = run(rig, VerticalGrating(cfg.vertical.period_deg),
                     lambda g, s=sign: g.drift(s * cfg.vertical.speed_deg_s, dt), cfg)
-            vertical += long(v, motion=label)
+            vertical += long_rows(v, source, w.cells, motion=label)
 
         base = run(rig, make_world(cfg.world), lambda g: None, cfg)
         for theta in cfg.rotation.axis_azimuths_deg:
             axis = horizontal_axis(theta)
             v = run(rig, make_world(cfg.world),
                     lambda g, a=axis: g.rotate(a, cfg.rotation.omega_deg_s, dt), cfg) - base
-            axis_rows += long(v, axis_azimuth_deg=theta)
+            axis_rows += long_rows(v, source, w.cells, axis_azimuth_deg=theta)
 
         df = pd.DataFrame([r for r in axis_rows if r["source"] == source])
         fit = fit_axis(df).merge(receptive_fields(w, eyes), on=["cell", "eye"])
@@ -220,7 +221,7 @@ def main(cfg: DictConfig) -> None:
     world = (f"{cfg.world.size_deg:g}° checkerboard" if cfg.world.kind == "checkerboard"
              else f"1/f^{cfg.world.alpha:g} texture")
     for source in cfg.lptc.sources:
-        sel = lambda d: d[(d.source == source) & d.cell.str.startswith("VS")]  # noqa: E731
+        sel = lambda d, s=source: d[(d.source == s) & d.cell.str.startswith("VS")]
         plot_axis_tuning(sel(axis_df), sel(axes_df),
                          f"VS rotation-axis tuning, {world} sphere ({source} weights)",
                          out_dir / f"vs_axis_tuning_{source}.png")
@@ -242,7 +243,7 @@ def main(cfg: DictConfig) -> None:
         if "connectome" in cfg.lptc.sources else None,
         total_s=round(time.time() - t0, 1),
     )
-    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, default=str))
+    save_meta(out_dir, meta)
     with pd.option_context("display.width", 160, "display.precision", 2):
         print(vs[["source", "cell", "eye", "rf_azimuth_deg", "rf_elevation_deg", "pref_axis_deg",
                   "pref_minus_predicted_deg", "matched_filter_axis_deg", "pref_minus_matched_deg",
@@ -254,4 +255,5 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    rewrite_index_flag()
     main()

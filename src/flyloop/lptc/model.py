@@ -12,6 +12,23 @@ dimensionless and V is in units of rectified T4/T5 activity. Inhibition is
 subtractive, as in flyvis. V includes a tonic offset from T4/T5 resting activity;
 compare cells (left vs right, or against a grey baseline) rather than reading V
 in absolute terms.
+
+Each frame is integrated exactly for an input held constant over the frame,
+x <- x + (1 - exp(-dt/tau)) (target - x). (Forward Euler with dt/tau clipped to 1
+made the layer instantaneous whenever tau <= dt, i.e. at the old 10 ms defaults.)
+
+Time-constant presets (LPTC_PRESETS):
+    simple      tau_lptc = tau_lpi = 10 ms. Placeholder values.
+    literature  tau_lptc = tau_lpi = 3 ms. LPTC membrane from blowfly passive
+                properties (Borst & Haag 1996, J Comput Neurosci 3:313-336): VS
+                cells Rm = 2.0 kOhm cm^2, Cm = 0.8 uF/cm^2, so Rm*Cm = 1.6 ms;
+                tangential cells low-pass current input with a 40-80 Hz cut-off,
+                tau = 1 / (2 pi f_c) = 2.0-4.0 ms. No LPi measurement was found;
+                LPi gets the same value (an assumption). No synaptic filter is
+                added: no T4/T5 -> LPTC kinetics were found either.
+The slow decay of the whole-pathway HS impulse response (tau ~ 65 ms in
+Drosophila, Schnell et al. 2014, PNAS) comes mostly from stages upstream that
+flyvis already models, so it is a check on the full pipeline, not an LPTC tau.
 """
 
 from __future__ import annotations
@@ -24,10 +41,21 @@ import torch
 from .weights import LPTCWeights
 
 
+def _step_fraction(dt: float, tau: float) -> float:
+    """Exact first-order update over dt for an input held constant."""
+    return 1.0 if tau <= 0 else float(-np.expm1(-dt / tau))
+
+
 def _row_normalize(w: np.ndarray) -> np.ndarray:
     flat = w.reshape(w.shape[0], -1)
     s = flat.sum(1, keepdims=True)
     return (flat / np.where(s > 0, s, 1)).reshape(w.shape)
+
+
+LPTC_PRESETS = {
+    "simple": {"tau_lptc": 0.010, "tau_lpi": 0.010},
+    "literature": {"tau_lptc": 0.003, "tau_lpi": 0.003},
+}
 
 
 @dataclass
@@ -37,6 +65,20 @@ class LPTCParams:
     g_exc: float = 1.0
     g_inh: float = 1.0
     g_lpi: float = 1.0
+
+    @classmethod
+    def from_config(cls, cfg) -> LPTCParams:
+        """From a config section: `preset` (default simple) sets the taus; any
+        of tau_lptc, tau_lpi, g_exc, g_inh, g_lpi that is set (not null)
+        overrides it."""
+        preset = cfg.get("preset") or "simple"
+        if preset not in LPTC_PRESETS:
+            raise ValueError(f"unknown LPTC preset {preset!r}; use {sorted(LPTC_PRESETS)}")
+        kw = dict(LPTC_PRESETS[preset])
+        for k in ("tau_lptc", "tau_lpi", "g_exc", "g_inh", "g_lpi"):
+            if cfg.get(k) is not None:
+                kw[k] = float(cfg.get(k))
+        return cls(**kw)
 
 
 class LPTCLayer:
@@ -82,8 +124,8 @@ class LPTCLayer:
             (v, state): v is (batch, n_frames, n_cells) HS/VS voltages.
         """
         p = self.params
-        a_lpi = min(self.dt / p.tau_lpi, 1.0)
-        a_v = min(self.dt / p.tau_lptc, 1.0)
+        a_lpi = _step_fraction(self.dt, p.tau_lpi)
+        a_v = _step_fraction(self.dt, p.tau_lptc)
         v, lpi = state["v"], state["lpi"]
         out = []
         for i in range(t4t5.shape[1]):

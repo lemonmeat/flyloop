@@ -1,0 +1,14 @@
+# Settings shared by every experiment config (pulled in by its `defaults` list).
+# Each experiment sets `sweep`, the name of its output folder.
+
+index: 0               # sweep_list entry to run, and the run folder name (<index>_<seed>)
+seed: 0
+out_root: ${oc.env:FLYLOOP_RUNS,runs}
+sweep_list: []         # optional: override dicts, one per index (Slurm array task)
+
+hydra:
+  run:
+    dir: ${out_root}/${sweep}/${index}_${seed}
+  output_subdir: .hydra
+  job:
+    chdir: false

@@ -1,15 +1,15 @@
 """Rank pretrained flyvis models by how well their T4/T5 tuning matches biology.
 
-Reads the per-model tuning runs written by
+Reads the per-model tuning runs written by, for model i = 0..49,
 
-    python scripts/run_openloop_tuning.py sweep=model_selection index=I model.name=flow/0000/00I
+    python tasks.py run openloop_tuning sweep=model_selection index=<i> model.name=flow/0000/<iii>
 
-and writes runs/model_selection/selection.csv with one row per model. A model
-passes when, for the central column, all 8 subtypes respond more to their
-expected polarity (T4: ON, T5: OFF) and prefer a direction within --max-pd-error
-degrees of the known one.
+(<iii> = i with three digits, e.g. 007) and writes runs/model_selection/selection.csv
+with one row per model. A model passes when, for the central column, all 8
+subtypes respond more to their expected polarity (T4: ON, T5: OFF) and prefer a
+direction within --max-pd-error degrees of the known one.
 
-    python scripts/summarize_model_selection.py [--runs runs/model_selection]
+    python tasks.py run summarize_model_selection [--runs runs/model_selection]
 """
 
 from __future__ import annotations

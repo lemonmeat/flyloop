@@ -85,13 +85,13 @@ class Corridor:
         t_best = np.full(d.shape[:-1], np.inf)
         which = np.full(d.shape[:-1], -1)
         with np.errstate(divide="ignore", invalid="ignore"):
-            for k, (surface, (axis, c, _)) in enumerate(planes.items()):
+            for k, (axis, c, _) in enumerate(planes.values()):
                 t = (c - o[axis]) / d[..., axis]
                 hit = (t > 0) & (t < t_best) & np.isfinite(t)
                 t_best = np.where(hit, t, t_best)
                 which = np.where(hit, k, which)
         out = np.full(d.shape[:-1], self.mean_lum, np.float32)
-        for k, (surface, (axis, c, v_axis)) in enumerate(planes.items()):
+        for k, (surface, (axis, _, v_axis)) in enumerate(planes.items()):
             m = which == k
             if not m.any() or not self.present[surface]:
                 continue

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from flyloop.geometry import angles, directions, rotation_matrix  # noqa: F401
+from flyloop.geometry import angles, directions, rotation_matrix
 from flyloop.stimuli.base import square
 from flyloop.stimuli.textures import sample_panorama, texture_1f
 
@@ -36,7 +36,7 @@ class Drum:
 
     @classmethod
     def grating(cls, period_deg: float = 30.0, contrast: float = 1.0, mean_lum: float = 0.5,
-                px_per_deg: float = 4.0) -> "Drum":
+                px_per_deg: float = 4.0) -> Drum:
         """Vertical square-wave stripes (period rounded to divide 360)."""
         n_cycles = max(1, int(round(360.0 / period_deg)))
         w, h = int(360 * px_per_deg), int(180 * px_per_deg)
@@ -46,7 +46,7 @@ class Drum:
 
     @classmethod
     def texture(cls, alpha: float = 2.0, contrast: float = 1.0, density: float = 1.0,
-                mean_lum: float = 0.5, seed: int = 0, px_per_deg: float = 2.0) -> "Drum":
+                mean_lum: float = 0.5, seed: int = 0, px_per_deg: float = 2.0) -> Drum:
         """1/f^alpha texture wrapped around the drum (seamless in azimuth)."""
         w, h = int(360 * px_per_deg), int(180 * px_per_deg)
         return cls(texture_1f((h, w), alpha, contrast, density, mean_lum, seed=seed))
@@ -89,13 +89,13 @@ class SphereWorld:
 
     @classmethod
     def texture(cls, alpha: float = 2.0, contrast: float = 1.0, density: float = 1.0,
-                mean_lum: float = 0.5, seed: int = 0, px_per_deg: float = 2.0) -> "SphereWorld":
+                mean_lum: float = 0.5, seed: int = 0, px_per_deg: float = 2.0) -> SphereWorld:
         w, h = int(360 * px_per_deg), int(180 * px_per_deg)
         return cls(texture_1f((h, w), alpha, contrast, density, mean_lum, seed=seed))
 
     @classmethod
     def checkerboard(cls, size_deg: float = 20.0, contrast: float = 1.0,
-                     mean_lum: float = 0.5, px_per_deg: float = 2.0) -> "SphereWorld":
+                     mean_lum: float = 0.5, px_per_deg: float = 2.0) -> SphereWorld:
         w, h = int(360 * px_per_deg), int(180 * px_per_deg)
         az = (np.arange(w) + 0.5) / px_per_deg
         el = (np.arange(h) + 0.5) / px_per_deg

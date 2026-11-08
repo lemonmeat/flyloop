@@ -3,44 +3,43 @@
 Runs the pretrained flyvis network on moving edges at 8 directions, then saves
 polar tuning plots and DSI / preferred direction per subtype.
 
-    python scripts/run_openloop_tuning.py                    # defaults
-    python scripts/run_openloop_tuning.py stimulus.contrast=0.5 index=1
-    python scripts/run_openloop_tuning.py --index 3          # Slurm-style
+    python tasks.py run openloop_tuning                       # defaults
+    python tasks.py run openloop_tuning stimulus.contrast=0.5 index=1
+    python tasks.py run openloop_tuning --index 3             # as a Slurm array task
 """
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 import hydra
 import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-import torch  # noqa: E402
-from hydra.core.hydra_config import HydraConfig  # noqa: E402
-from omegaconf import DictConfig  # noqa: E402
-
-from flyloop.metrics import (  # noqa: E402
+from flyloop.metrics import (
     angular_difference,
     direction_selectivity_index,
     peak_response,
     preferred_direction,
 )
-from flyloop.runio import apply_sweep, rewrite_index_flag, write_run_metadata  # noqa: E402
-from flyloop.stimuli import HexLattice, StimulusSequence, moving_edge  # noqa: E402
-from flyloop.vision import FlyvisModel  # noqa: E402
+from flyloop.plotting import CATEGORICAL, INK, MUTED, SURFACE
+from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
+from flyloop.stimuli import HexLattice, StimulusSequence, moving_edge
+from flyloop.vision import FlyvisModel
+
+matplotlib.use("Agg")
 
 # Known preferred directions in flyvis's angle convention (0 = rightward, 90 = up),
 # from flyvis.analysis.moving_bar_responses.angular_distance_to_known.
 KNOWN_PD = {"a": 180.0, "b": 0.0, "c": 90.0, "d": 270.0}
 EXPECTED_POLARITY = {"T4": "on", "T5": "off"}
-COLORS = {"on": "#2a78d6", "off": "#eb6834"}  # categorical slots 1 and 2
-INK, MUTED = "#0b0b0b", "#52514e"
+COLORS = {"on": CATEGORICAL[0], "off": CATEGORICAL[1]}
 
 
 def compute_metrics(peaks, directions, polarities, cell_types, norm_across):
@@ -66,14 +65,16 @@ def summarize(metrics: pd.DataFrame, readout: str) -> pd.DataFrame:
         g = g.set_index("polarity")
         expected_pol = EXPECTED_POLARITY.get(ct[:2])
         dominant = g["response_sum"].idxmax()
+        on_off_ratio = g.loc["on", "response_sum"] / max(g.loc["off", "response_sum"], 1e-12)
         row = dict(cell_type=ct, readout=readout, dominant_polarity=dominant,
-                   expected_polarity=expected_pol,
-                   on_off_ratio=g.loc["on", "response_sum"] / max(g.loc["off", "response_sum"], 1e-12))
+                   expected_polarity=expected_pol, on_off_ratio=on_off_ratio)
         pol = expected_pol or dominant
-        row.update(dsi=g.loc[pol, "dsi"], preferred_direction_deg=g.loc[pol, "preferred_direction_deg"])
+        row.update(dsi=g.loc[pol, "dsi"],
+                   preferred_direction_deg=g.loc[pol, "preferred_direction_deg"])
         if ct[-1] in KNOWN_PD:
             row["known_pd_deg"] = KNOWN_PD[ct[-1]]
-            row["pd_error_deg"] = angular_difference(row["preferred_direction_deg"], KNOWN_PD[ct[-1]])
+            row["pd_error_deg"] = angular_difference(row["preferred_direction_deg"],
+                                                     KNOWN_PD[ct[-1]])
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -83,7 +84,7 @@ def polar_plot(peaks, directions, polarities, cell_types, metrics, title, path):
     ncols = 4
     nrows = int(np.ceil(n / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(3.0 * ncols, 3.6 * nrows),
-                             subplot_kw=dict(projection="polar"), facecolor="#fcfcfb")
+                             subplot_kw=dict(projection="polar"), facecolor=SURFACE)
     theta = np.radians(np.r_[directions, directions[0]])
     for t, (ax, ct) in enumerate(zip(np.ravel(axes), cell_types)):
         scale = peaks[:, :, t].max() or 1.0
@@ -128,10 +129,8 @@ def polar_plot(peaks, directions, polarities, cell_types, metrics, title, path):
 
 def flyvis_reference(model: FlyvisModel, cfg: DictConfig) -> pd.DataFrame:
     """flyvis's own MovingEdge stimulus and DSI/PD functions, for comparison."""
-    from flyvis.analysis.moving_bar_responses import (
-        direction_selectivity_index as fv_dsi,
-        preferred_direction as fv_pd,
-    )
+    from flyvis.analysis.moving_bar_responses import direction_selectivity_index as fv_dsi
+    from flyvis.analysis.moving_bar_responses import preferred_direction as fv_pd
     from flyvis.datasets.moving_bar import MovingEdge
 
     s = cfg.stimulus
@@ -150,9 +149,6 @@ def flyvis_reference(model: FlyvisModel, cfg: DictConfig) -> pd.DataFrame:
                 preferred_direction_deg=float(np.degrees(
                     pds.custom.where(cell_type=ct, intensity=intensity).item()) % 360)))
     return pd.DataFrame(rows)
-
-
-rewrite_index_flag()
 
 
 @hydra.main(config_path="../configs", config_name="openloop_tuning", version_base="1.3")
@@ -234,7 +230,7 @@ def main(cfg: DictConfig) -> None:
     }
     meta.update(checks, simulate_s=round(t_sim, 2), total_s=round(time.time() - t0, 2),
                 n_stimuli=len(stims), n_frames=int(movie.shape[1]))
-    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, default=str))
+    save_meta(out_dir, meta)
 
     with pd.option_context("display.width", 160, "display.precision", 2):
         print(summary.to_string(index=False))
@@ -242,4 +238,5 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    rewrite_index_flag()
     main()

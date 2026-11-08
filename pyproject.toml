@@ -7,8 +7,10 @@ name = "flyloop"
 version = "0.1.0"
 description = "Closed-loop virtual fly steered by a connectome-constrained visual system (flyvis)."
 readme = "README.md"
+# 3.10 only, so that flybody (MuJoCo, Python 3.10) fits in the same environment
 requires-python = ">=3.10,<3.11"
 authors = [{ name = "Andre Graves", email = "ag0226@princeton.edu" }]
+urls = { Repository = "https://github.com/lemonmeat/flyloop" }
 dependencies = [
   "flyvis==1.2.0",
   "torch",
@@ -16,15 +18,22 @@ dependencies = [
   "scipy",
   "matplotlib",
   "pandas",
+  "pyarrow",          # parquet cache of the connectome tables
   "hydra-core>=1.3",
   "omegaconf",
-  "wandb",
   "neuprint-python",
   "python-dotenv",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+# MP4/GIF output (scripts/animate_corridor.py, scripts/run_flybody_corridor.py)
+video = ["imageio", "imageio-ffmpeg"]
+# flybody (MuJoCo) body for the visualization demo; dm_control pins numpy<2
+flybody = [
+  "flyloop[video]",
+  "flybody @ git+https://github.com/TuragaLab/flybody.git",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -34,5 +43,12 @@ testpaths = ["tests"]
 markers = ["flyvis: tests that load the pretrained flyvis model (slow, need the download)"]
 
 [tool.ruff]
-line-length = 90
+line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP"]
+ignore = [
+  "E731",  # short assigned lambdas are used on purpose
+  "B905",  # zip() without strict=: the zipped sequences are equal-length by construction
+]

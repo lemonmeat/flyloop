@@ -5,8 +5,8 @@ static settling period and average the last half of the HS/VS responses. Saves a
 CSV per cell type (left, right, left - right) and a plot of HS left - right
 against angular velocity for each LPTC weight source.
 
-    python scripts/run_drum_openloop.py
-    python scripts/run_drum_openloop.py drum.kind=texture drum.alpha=1.0
+    python tasks.py run drum_openloop
+    python tasks.py run drum_openloop drum.kind=texture drum.alpha=1.0
 """
 
 from __future__ import annotations
@@ -16,22 +16,22 @@ from pathlib import Path
 
 import hydra
 import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig
+
+from flyloop.eyes import Eyes
+from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights
+from flyloop.plotting import CATEGORICAL, GRID, INK, MUTED, SURFACE
+from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
+from flyloop.sim import Drum, VisualRig
+from flyloop.vision import FlyvisModel
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-from hydra.core.hydra_config import HydraConfig  # noqa: E402
-from omegaconf import DictConfig  # noqa: E402
 
-from flyloop.eyes import Eyes  # noqa: E402
-from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights  # noqa: E402
-from flyloop.runio import apply_sweep, rewrite_index_flag, write_run_metadata  # noqa: E402
-from flyloop.sim import Drum, VisualRig  # noqa: E402
-from flyloop.vision import FlyvisModel  # noqa: E402
-
-COLORS = {"connectome": "#2a78d6", "simple": "#eb6834"}  # categorical slots 1, 2
-INK, MUTED, GRID = "#0b0b0b", "#52514e", "#e4e3df"
+COLORS = {"connectome": CATEGORICAL[0], "simple": CATEGORICAL[1]}
 
 
 def make_drum(cfg) -> Drum:
@@ -63,8 +63,8 @@ def tuning(rig: VisualRig, cfg: DictConfig) -> pd.DataFrame:
 
 
 def plot(df: pd.DataFrame, title: str, path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(6.4, 4.0), facecolor="#fcfcfb")
-    ax.set_facecolor("#fcfcfb")
+    fig, ax = plt.subplots(figsize=(6.4, 4.0), facecolor=SURFACE)
+    ax.set_facecolor(SURFACE)
     hs = df[df.cells == "HS"]
     for source, g in hs.groupby("source"):
         g = g.sort_values("omega_deg_s")
@@ -86,9 +86,6 @@ def plot(df: pd.DataFrame, title: str, path: Path) -> None:
     plt.close(fig)
 
 
-rewrite_index_flag()
-
-
 @hydra.main(config_path="../configs", config_name="drum_openloop", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     cfg = apply_sweep(cfg)
@@ -97,10 +94,10 @@ def main(cfg: DictConfig) -> None:
     model = FlyvisModel(cfg.model.name, dt=cfg.model.dt)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
     eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
-    params = LPTCParams(cfg.lptc.tau_lptc, cfg.lptc.tau_lpi, cfg.lptc.g_exc, cfg.lptc.g_inh)
+    params = LPTCParams.from_config(cfg.lptc)
     frames = []
     for source in cfg.lptc.sources:
-        w = LPTCWeights.from_connectome() if source == "connectome" else LPTCWeights.simple()
+        w = LPTCWeights.from_source(source)
         rig = VisualRig(eyes, model, LPTCLayer(w, cfg.model.dt, params))
         frames.append(tuning(rig, cfg).assign(source=source))
         if source == "connectome":
@@ -112,9 +109,7 @@ def main(cfg: DictConfig) -> None:
     plot(df, f"Open-loop yaw tuning, {drum} drum ({cfg.model.name})",
          out_dir / "yaw_tuning.png")
     meta["total_s"] = round(time.time() - t0, 1)
-    import json
-
-    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, default=str))
+    save_meta(out_dir, meta)
     hs = df[df.cells == "HS"].pivot(index="omega_deg_s", columns="source",
                                     values="left_minus_right")
     print(hs.round(3).to_string())
@@ -122,4 +117,5 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    rewrite_index_flag()
     main()

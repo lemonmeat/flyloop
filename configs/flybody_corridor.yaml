@@ -1,0 +1,52 @@
+# Visualization demo: the flybody (MuJoCo) fly in the corridor, steered by the
+# optomotor PD on the HS yaw estimate. Not validated; see flyloop.sim.flybody_body.
+# Run: python tasks.py run flybody_corridor [key=value ...]
+# Needs the flybody extra: python tasks.py env --extras flybody
+
+defaults:
+  - common
+  - _self_
+
+sweep: flybody_corridor
+
+model: flow/0000/000
+dt: 0.01
+
+eyes:
+  axis_azimuth_deg: 80.0
+  n_sub: 3
+
+lptc:
+  source: connectome
+  preset: simple       # LPTC/LPi time constants: simple (10 ms) or literature (3 ms)
+  tau_lptc: null       # s; set to override the preset
+  tau_lpi: null
+
+corridor:              # as configs/corridor.yaml (width 1)
+  pattern: checker
+  square: 0.1
+  alpha: 1.0
+  contrast: 1.0
+  length: 8.0
+  seed: 1
+
+flybody:
+  scale_cm: 5.0        # corridor width in cm; fly speed = speed * scale_cm cm/s
+  assist: full         # full (autopilot holds speed/height/attitude) or yaw_only
+  tau_lin_s: 0.05
+  tau_att_s: 0.005
+  average_pose: true   # eyes see the pose averaged over each 10 ms frame
+
+speed: 0.5             # corridor widths per s
+body_tau_s: 0.05
+optomotor: {kp: 5.0, kd: 1.0}
+start: [0.15, 10.0]    # lateral offset (widths), heading (deg) when the loop closes
+torque_deg_s: 20.0     # constant yaw torque (simulated wing imbalance)
+t_run: 5.0
+t_settle: 1.0
+collision_margin: 0.03
+
+video:
+  fps: 25              # playback; frames are 10 ms apart, so 4x slow motion
+  height: 480
+  width: 640

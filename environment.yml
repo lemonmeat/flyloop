@@ -1,26 +1,13 @@
+# Conda alternative to the default uv environment, for machines where conda is the
+# usual way to get Python (e.g. a cluster with an anaconda module):
+#   python tasks.py env --conda      (then: conda activate flyloop; python tasks.py models)
+# Dependencies are listed once, in pyproject.toml; this file only provides Python.
+# torch comes from PyPI: CUDA build on Linux, CPU build on macOS and Windows.
 name: flyloop
 channels:
   - conda-forge
 dependencies:
   - python=3.10
   - pip
-  - numpy
-  - scipy
-  - matplotlib
-  - pandas
-  - pytest
-  - ffmpeg
   - pip:
-      # torch from PyPI: CPU/MPS build on macOS, CUDA build on Linux (Adroit).
-      - torch
-      - torchvision
-      - flyvis==1.2.0
-      - hydra-core>=1.3
-      - wandb
-      - neuprint-python
-      - python-dotenv
-      - ruff
-      # this repo, editable
-      - -e .
-# After creating the env, download the pretrained flyvis ensemble (`python tasks.py models`), i.e.
-#   FLYVIS_ROOT_DIR=$PWD/data/flyvis flyvis download-pretrained
+      - -e .[dev]

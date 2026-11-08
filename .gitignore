@@ -1,10 +1,11 @@
 # Run outputs (keep the folder)
 runs/*
 !runs/.gitkeep
+logs/
 outputs/
 multirun/
 
-# flyvis pretrained models and caches
+# flyvis pretrained models, connectome cache
 data/
 
 # Python
@@ -16,12 +17,12 @@ __pycache__/
 build/
 dist/
 
-# Environments and secrets
+# Environments and local settings
 .env
 .venv/
-wandb/
+slurm/env.sh
 
-# Notebooks and OS
+# Notebooks, editors, OS
 .ipynb_checkpoints/
 .DS_Store
 .vscode/

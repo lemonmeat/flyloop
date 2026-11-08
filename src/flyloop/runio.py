@@ -56,11 +56,15 @@ def git_commit() -> dict:
             return None
 
     status = run("status", "--porcelain")
-    return {"commit": run("rev-parse", "HEAD"), "dirty": bool(status) if status is not None else None}
+    return {"commit": run("rev-parse", "HEAD"),
+            "dirty": None if status is None else bool(status)}
 
 
 def write_run_metadata(out_dir: Path, cfg: DictConfig, **extra) -> dict:
-    """Write the resolved config (config.yaml) and run metadata (meta.json)."""
+    """Write the resolved config (config.yaml) and run metadata (meta.json).
+
+    Returns the metadata; add results to it and call save_meta again at the end.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(cfg, out_dir / "config.yaml", resolve=True)
     meta = {
@@ -70,5 +74,10 @@ def write_run_metadata(out_dir: Path, cfg: DictConfig, **extra) -> dict:
         "python": platform.python_version(),
         **extra,
     }
-    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, default=str))
+    save_meta(out_dir, meta)
     return meta
+
+
+def save_meta(out_dir: Path, meta: dict) -> None:
+    """(Re)write out_dir/meta.json."""
+    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2, default=str))

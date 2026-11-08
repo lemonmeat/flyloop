@@ -1,10 +1,11 @@
 # Open-loop T4/T5 direction tuning to moving ON and OFF edges.
-# Run: python scripts/run_openloop_tuning.py [key=value ...]
+# Run: python tasks.py run openloop_tuning [key=value ...]
+
+defaults:
+  - common
+  - _self_
 
 sweep: openloop_tuning
-index: 0
-seed: 0
-out_root: ${oc.env:FLYLOOP_RUNS,runs}
 save_raw: false        # also save central/mean traces of every stimulus (npz)
 
 model:
@@ -33,13 +34,3 @@ analysis:
   baseline: null       # null = raw rectified voltage (flyvis); "pre" = subtract pre-motion value
   norm_across_polarity: true  # DSI denominator = max over ON/OFF (flyvis convention)
   compare_flyvis: false  # also run flyvis's own MovingEdge through NetworkView (slow, first time)
-
-# Optional sweep: a list of override dicts selected by `index`.
-sweep_list: []
-
-hydra:
-  run:
-    dir: ${out_root}/${sweep}/${index}_${seed}
-  output_subdir: .hydra
-  job:
-    chdir: false

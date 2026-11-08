@@ -131,5 +131,5 @@ def load(name: str, cache_dir: Path = CACHE_DIR) -> pd.DataFrame:
     """Load one cached table (see module docstring); run fetch_all() first."""
     path = cache_dir / f"{name}.parquet"
     if not path.exists():
-        raise FileNotFoundError(f"{path} missing: run scripts/fetch_connectome.py")
+        raise FileNotFoundError(f"{path} missing: run `python tasks.py connectome`")
     return pd.read_parquet(path)

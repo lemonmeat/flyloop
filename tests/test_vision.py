@@ -41,6 +41,27 @@ def test_step_reproduces_simulate(model):
     np.testing.assert_allclose(torch.cat(out, 1).cpu().numpy(), ref, atol=1e-6)
 
 
+@pytest.mark.parametrize("kind", ["steady", "fade_in"])
+def test_initial_state_matches_flyvis(model, kind):
+    """init_state steps with bounded memory but must equal flyvis's own result."""
+    from flyloop.stimuli import drifting_grating
+
+    first = drifting_grating(30, t_pre=0.0, duration_s=0.05, dt=model.dt).frames[:1]
+    first = first[None].repeat(2, 1, 1, 1)[:, 0]  # (batch 2, 1, 721)
+    saved = model.initial_state, model.t_init
+    model.initial_state, model.t_init = kind, 0.3
+    try:
+        ours = model.init_state(2, first).nodes.activity
+        if kind == "steady":
+            ref = model.network.steady_state(0.3, model.dt, 2, value=0.5)
+        else:
+            ref = model.network.fade_in_state(0.3, model.dt, first)
+    finally:
+        model.initial_state, model.t_init = saved
+    np.testing.assert_allclose(ours.cpu().numpy(), ref.nodes.activity.cpu().numpy(),
+                               atol=1e-6)
+
+
 def test_configurable_cell_types(model):
     from flyloop.vision import T4T5
 

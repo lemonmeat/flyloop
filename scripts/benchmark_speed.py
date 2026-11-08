@@ -6,11 +6,11 @@ control period, state carried over) for:
   two_eyes          two model instances (one per eye), stepped alternately
   two_eyes_batched  one model instance, batch 2 (both eyes share the weights)
 
-Each device runs in a fresh subprocess because flyvis fixes its device at import
-(cuda if available, else cpu). On Apple silicon MPS is attempted and reported.
+Each device runs in a fresh subprocess (FLYLOOP_DEVICE=<device>) because flyvis
+fixes its device when it is imported. Apple MPS is not supported by flyvis 1.2.0.
 
-    python scripts/benchmark_speed.py                     # cpu, plus cuda/mps if present
-    python scripts/benchmark_speed.py --devices cpu --sim-seconds 1
+    python tasks.py run benchmark_speed                   # cpu, plus cuda if present
+    python tasks.py run benchmark_speed --devices cpu --sim-seconds 1
 """
 
 from __future__ import annotations
@@ -18,9 +18,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 CONFIGS = ("one_eye", "two_eyes", "two_eyes_batched")
 
@@ -28,29 +30,22 @@ CONFIGS = ("one_eye", "two_eyes", "two_eyes_batched")
 def worker(device: str, dts: list[float], sim_seconds: float, control_dt: float) -> dict:
     import torch
 
-    import flyloop  # noqa: F401
-    from flyloop.vision import FlyvisModel, set_flyvis_device
+    from flyloop.vision import FlyvisModel  # checks the device against FLYLOOP_DEVICE
 
-    if device == "mps":
-        set_flyvis_device("mps")  # raises inside flyvis if unsupported
     out = {"device": device, "torch_threads": torch.get_num_threads(), "results": []}
 
     def sync():
         if device == "cuda":
             torch.cuda.synchronize()
-        elif device == "mps":
-            torch.mps.synchronize()
 
     for dt in dts:
         models = [FlyvisModel(dt=dt), FlyvisModel(dt=dt)]
-        if str(models[0].device).split(":")[0] != device:
-            raise RuntimeError(f"model is on {models[0].device}, expected {device}")
         k = max(1, round(control_dt / dt))
         n_steps = round(sim_seconds / (k * dt))
         for config in CONFIGS:
             eyes = models[:2] if config == "two_eyes" else models[:1]
             batch = 2 if config == "two_eyes_batched" else 1
-            # draw on the CPU explicitly: flyvis makes cuda torch's default device
+            # draw on the CPU explicitly: flyvis makes its device torch's default
             gen = torch.Generator(device="cpu").manual_seed(0)
             frames = torch.rand(batch, k, 1, 721, generator=gen, device="cpu")
             frames = frames.to(models[0].device)
@@ -73,12 +68,10 @@ def worker(device: str, dts: list[float], sim_seconds: float, control_dt: float)
 
 
 def run_device(device: str, args) -> dict:
-    env = dict(os.environ)
-    if device == "cpu":
-        env["CUDA_VISIBLE_DEVICES"] = ""  # keep flyvis off the GPU
+    env = {**os.environ, "FLYLOOP_DEVICE": device}
     cmd = [sys.executable, __file__, "--worker", device, "--sim-seconds", str(args.sim_seconds),
            "--control-dt", str(args.control_dt), "--dts", *map(str, args.dts)]
-    p = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    p = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
     lines = [ln for ln in p.stdout.splitlines() if ln.startswith("RESULT ")]
     if p.returncode != 0 or not lines:
         err = (p.stderr.strip().splitlines() or ["unknown error"])[-1]
@@ -89,12 +82,7 @@ def run_device(device: str, args) -> dict:
 def available_devices() -> list[str]:
     import torch
 
-    devs = ["cpu"]
-    if torch.cuda.is_available():
-        devs.append("cuda")
-    if torch.backends.mps.is_available():
-        devs.append("mps")
-    return devs
+    return ["cpu", "cuda"] if torch.cuda.is_available() else ["cpu"]
 
 
 def print_table(reports: list[dict], dts: list[float], control_dt: float) -> str:
@@ -120,8 +108,8 @@ def print_table(reports: list[dict], dts: list[float], control_dt: float) -> str
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--devices", nargs="*", default=None,
-                    help="subset of cpu cuda mps (default: all available)")
+    ap.add_argument("--devices", nargs="*", default=None, choices=("cpu", "cuda"),
+                    help="default: cpu, and cuda if torch sees a GPU")
     ap.add_argument("--dts", nargs="*", type=float, default=[0.005, 0.01],
                     help="integration steps in seconds")
     ap.add_argument("--sim-seconds", type=float, default=2.0)
@@ -139,24 +127,20 @@ def main():
                                             args.control_dt)))
         return
 
-    import platform
-
     from flyloop.runio import git_commit
 
-    if args.out is None:
-        args.out = os.path.join(os.environ.get("FLYLOOP_RUNS", "runs"), "benchmark_speed",
-                                f"{args.index}_0")
+    out = Path(args.out or Path(os.environ.get("FLYLOOP_RUNS", "runs")) / "benchmark_speed"
+               / f"{args.index}_0")
     devices = args.devices or available_devices()
     reports = [run_device(d, args) for d in devices]
     text = print_table(reports, args.dts, args.control_dt)
-    os.makedirs(args.out, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     meta = dict(git_commit(), host=platform.node(), machine=platform.machine(),
                 processor=platform.processor(), python=platform.python_version(),
                 args=vars(args))
-    with open(os.path.join(args.out, "benchmark.json"), "w") as f:
-        json.dump(dict(meta=meta, reports=reports), f, indent=2)
-    with open(os.path.join(args.out, "benchmark.txt"), "w") as f:
-        f.write(text + "\n")
+    (out / "benchmark.json").write_text(json.dumps(dict(meta=meta, reports=reports), indent=2))
+    (out / "benchmark.txt").write_text(text + "\n")
+    print(f"-> {out}")
 
 
 if __name__ == "__main__":

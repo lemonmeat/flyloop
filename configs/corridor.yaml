@@ -1,10 +1,11 @@
 # Corridor centering: forward flight down a textured corridor, steering by yaw only.
-# Run: python scripts/run_corridor.py [key=value ...]
+# Run: python tasks.py run corridor [key=value ...]
+
+defaults:
+  - common
+  - _self_
 
 sweep: corridor
-index: 0
-seed: 0
-out_root: ${oc.env:FLYLOOP_RUNS,runs}
 
 model: flow/0000/000
 dt: 0.01
@@ -15,8 +16,9 @@ eyes:
 
 lptc:
   source: connectome
-  tau_lptc: 0.01
-  tau_lpi: 0.01
+  preset: simple       # LPTC/LPi time constants: simple (10 ms) or literature (3 ms)
+  tau_lptc: null       # s; set to override the preset
+  tau_lpi: null
 
 corridor:              # width 1; flow at a wall scales as speed / distance
   pattern: checker     # checker (random squares) or texture (1/f^alpha)
@@ -54,12 +56,3 @@ torque_deg_s: 20.0     # yaw torque trials (start centred)
 t_run: 12.0
 t_settle: 1.0
 t_score: 4.0
-
-sweep_list: []
-
-hydra:
-  run:
-    dir: ${out_root}/${sweep}/${index}_${seed}
-  output_subdir: .hydra
-  job:
-    chdir: false
