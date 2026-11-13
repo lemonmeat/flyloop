@@ -257,6 +257,56 @@ class ActivityFigure:
         plt.close(self.fig)
 
 
+class EyeMosaic:
+    """Both eyes' photoreceptor input as one image strip, for video frames.
+
+    Drawn as the fly sees it from inside, as `ActivityFigure`: left eye on the
+    left, right eye on the right, front in the middle, dorsal up.
+
+    Args:
+        n_hexals: Columns per eye.
+        width: Width of the strip in pixels.
+        px_deg: Degrees per pixel of the mosaics.
+        title: Caption above the mosaics.
+    """
+
+    def __init__(self, n_hexals: int, width: int = 1280, px_deg: float = 0.6,
+                 title: str = "photoreceptor input"):
+        import matplotlib.pyplot as plt
+
+        lat = HexLattice(extent=_extent(n_hexals), n_sub=1)
+        self._index, self._mask, _ = _raster(lat, px_deg)
+        self._index, self._mask = self._index[::-1], self._mask[::-1]  # row 0 = top
+        side = self._index.shape[0]
+        height = side + 48
+        height += -height % 8  # video encoders want multiples of 8
+        gap = 24
+        self._slots = [(height - side - 8, width // 2 - gap // 2 - side),
+                       (height - side - 8, width // 2 + gap // 2)]
+        fig = plt.figure(figsize=(width / 100, height / 100), dpi=100, facecolor=SURFACE)
+        fig.text(0.5, 1 - 14 / height, title, ha="center", va="center", fontsize=10, color=INK)
+        for (_, x), name, ha in zip(self._slots, ("left eye", "right eye"), ("right", "left")):
+            edge = x - 12 if ha == "right" else x + side + 12
+            fig.text(edge / width, 0.5, name, ha=ha, va="center", fontsize=9, color=MUTED)
+        fig.canvas.draw()
+        self._background = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
+        plt.close(fig)
+
+    def image(self, frame: np.ndarray) -> np.ndarray:
+        """uint8 RGB strip for one frame (2, n_hexals) of luminance in 0..1,
+        eyes in EYE_ORDER (left, right)."""
+        out = self._background.copy()
+        side = self._index.shape[0]
+        for j, (y, x) in enumerate(self._slots):
+            grey = (np.clip(frame[j], 0, 1) * 255).astype(np.uint8)[self._index]
+            if j == 1:  # right eye: anterior edge on its left
+                grey, mask = grey[:, ::-1], self._mask[:, ::-1]
+            else:
+                mask = self._mask
+            out[y:y + side, x:x + side][mask] = grey[mask][:, None]
+        return out
+
+
 def _extent(n_hexals: int) -> int:
     """Hex radius of a lattice with n_hexals columns (3 r (r + 1) + 1)."""
     return int(round((np.sqrt(12 * n_hexals - 3) - 3) / 6))

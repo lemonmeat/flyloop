@@ -1,7 +1,12 @@
 import numpy as np
 import pytest
 
-from flyloop.control import CorridorController, EfferenceCentering, LinearReadout
+from flyloop.control import (
+    CorridorController,
+    EfferenceCentering,
+    LinearReadout,
+    SaccadicController,
+)
 from flyloop.eyes import Eyes
 from flyloop.geometry import directions, rotation_matrix
 from flyloop.sim import Corridor, KinematicBody
@@ -46,6 +51,13 @@ def test_distant_wall_is_prefiltered_toward_the_mean():
     far = directions(np.full(200, 2.0), np.linspace(-3, 3, 200))
     near = directions(np.full(200, 90.0), np.linspace(-3, 3, 200))
     assert c.luminance_at(np.zeros(3), far).std() < 0.3 * c.luminance_at(np.zeros(3), near).std()
+
+
+def test_rays_almost_parallel_to_the_corridor_show_the_mean():
+    """A wall 1e16 widths away must not overflow the texture lookup."""
+    c = Corridor(seed=0)
+    d = np.array([[1.0, 1e-17, 0.0], [1.0, 0.0, 0.0], [-1.0, 0.0, 1e-17]])
+    np.testing.assert_allclose(c.luminance_at(np.zeros(3), d), c.mean_lum)
 
 
 def test_eyes_render_from_a_position():
@@ -108,4 +120,38 @@ def test_efference_centering_converges_in_toy_corridor(y0, psi0):
 def test_efference_centering_needs_vision():
     # with no visual signal the start heading is never corrected
     body = toy_corridor(EfferenceCentering(50.0, 0.5), 0.0, 30.0, b=0.0)
+    assert abs(body.position[1]) > 0.4
+
+
+def test_saccade_is_one_fixed_turn_away_from_the_nearer_wall():
+    ctrl = SaccadicController(50.0, 0.5, amplitude_deg=20.0, duration_s=0.05, suppress_s=0.2)
+    body = KinematicBody(0.05, free_axes=("yaw",))
+    near_left = np.array([0.0, 0.0, 50.0 * 0.15])  # yaw estimate at y = +0.15
+    commands = []
+    for _ in range(24):  # the turn (5 steps) and most of the suppression after it
+        commands.append(ctrl(near_left, 0.01)[2])
+        body.step([0.0, 0.0, commands[-1]], 0.01)
+    assert ctrl.n_saccades == 1
+    np.testing.assert_allclose(commands[:5], -400.0)   # 20 deg in 0.05 s, to the right
+    np.testing.assert_allclose(commands[5:], 0.0)      # straight flight, vision suppressed
+    assert body.heading_deg == pytest.approx(-20.0, abs=0.5)
+
+
+def test_saccadic_controller_flies_straight_when_centred():
+    ctrl = SaccadicController(50.0, 0.5)
+    body = toy_corridor(ctrl, y0=0.0)
+    assert ctrl.n_saccades == 0 and body.position[1] == 0 and body.heading_deg == 0
+
+
+@pytest.mark.parametrize("y0, psi0", [(0.25, 0.0), (-0.25, 0.0), (0.0, 30.0), (0.0, -30.0)])
+def test_saccadic_controller_stays_in_toy_corridor(y0, psi0):
+    ctrl = SaccadicController(50.0, 0.5)
+    body = toy_corridor(ctrl, y0, psi0, t=30.0)
+    assert abs(body.position[1]) < 0.2 and abs(body.heading_deg) < 45
+    assert 0 < ctrl.n_saccades < 150   # it turns, with straight flight in between
+
+
+def test_saccadic_controller_needs_the_rate_of_the_offset():
+    # triggered by the offset alone, the fly turns again while it already leaves the wall
+    body = toy_corridor(SaccadicController(50.0, 0.5, lookahead_s=0.0), 0.25, 0.0, t=30.0)
     assert abs(body.position[1]) > 0.4

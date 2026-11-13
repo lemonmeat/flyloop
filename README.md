@@ -28,8 +28,9 @@ world: drum, sphere or corridor; 1/f^alpha textures, gratings, checkerboards
 | `drum_openloop` | Open-loop yaw tuning: HS left minus right against drum angular velocity, for connectome and simple pooled weights. |
 | `vs_tuning` | VS responses to vertical motion and their preferred rotation axis, compared with a matched-filter prediction from anatomy alone. |
 | `closedloop` | Course and attitude stabilization against a constant torque about yaw, pitch or roll, with T4/T5 intact, T4 only, T5 only or silenced. Also includes controls (grey world, no torque), a 1/f texture world, optomotor following and a controller gain scan. |
-| `corridor` | Corridor centering in forward flight. Compares no steering, optomotor only, a fitted vision-only HS/VS readout, and HS plus an efference copy of the fly's own turns (intact and T4/T5 silenced). |
-| `flybody_corridor` | Visualization prototype: the flybody (MuJoCo) fly flown by the same loop (not validated; see `src/flyloop/sim/flybody_body.py`). |
+| `corridor` | Corridor centering in forward flight. Compares no steering, optomotor only, a fitted vision-only HS/VS readout, HS plus an efference copy of the fly's own turns (intact and T4/T5 silenced), and saccadic flight: straight segments and fixed turns away from the nearer wall, triggered by the same HS signal. |
+| `noise` | Gaussian noise at the photoreceptors, T4/T5 or HS/VS (one sweep entry per stage and level), scored open loop (T4/T5 and HS direction selectivity) and closed loop (efference-copy corridor centering). |
+| `flybody_corridor` | Prototype: the flybody (MuJoCo) fly flown by the same loop, with the photoreceptor input rendered by MuJoCo from the fly's head (`flybody.vision=mujoco`, the default) or ray-cast as in `corridor` (`flybody.vision=analytic`). `controller` picks optomotor, readout, efference or saccade; the last three load the `calibration.npz` of a `corridor` run. The rendering is tested against the analytic corridor; the flight is held up artificially and not validated (see `src/flyloop/sim/flybody_body.py`). |
 
 The first validation from the project plan is covered by a test: a constant yaw
 torque (a simulated wing imbalance) is compensated with T4/T5 intact, and the fly
@@ -104,6 +105,8 @@ python tasks.py run                                   # list the scripts
 python tasks.py run openloop_tuning
 python tasks.py run closedloop "models=[flow/0000/000]" t_run=2.0
 python tasks.py run corridor corridor.pattern=texture speed=1.0
+python tasks.py run noise index=3                     # entry 3 of the noise sweep
+python tasks.py run summarize_noise                   # table and figures over runs/noise
 python tasks.py run animate_corridor runs/corridor/0_0    # MP4 of a run (--extras video)
 ```
 
@@ -160,8 +163,10 @@ Settings shared by all experiments (output folder, index, seed) are in
 | `drum_openloop` | `yaw_tuning.csv`, `yaw_tuning.png` |
 | `vs_tuning` | `vertical_motion.csv`, `axis_tuning.csv`, `preferred_axes.csv`, `vs_axis_tuning_<source>.png`, `vs_pref_vs_rf.png` |
 | `closedloop` | `scores.csv`, `timeseries.csv`, `calibration.csv`, `closedloop_traces.png`, `compensation.png`, `gain_scan.png` |
-| `corridor` | `scores.csv`, `timeseries.csv`, `readout_r2.csv`, `offset_calibration.csv`, `corridor_paths.png`, `offset_signal.png` |
-| `flybody_corridor` | `timeseries.csv`, `flybody_corridor.png`, `flybody_corridor.mp4` |
+| `corridor` | `scores.csv`, `timeseries.csv`, `readout_r2.csv`, `offset_calibration.csv`, `corridor_paths.png`, `offset_signal.png`, `calibration.npz` (decoder calibration, offset gain and fitted readout; `calibration=<path>` reuses it in `corridor` or `flybody_corridor`, `calibrate_only=true` stops after saving it; `sysid.attitude_deg` and `sysid.height` give each fitting flight a random pitch, roll and height) |
+| `noise` | `scores.csv`, `timeseries.csv`, `t4t5_dsi.csv`, `corridor_paths.png`; open-loop and closed-loop scores in `meta.json` |
+| `summarize_noise` | In `runs/noise`: `summary.csv` (one row per run), `noise_levels.png`, `behaviour_vs_dsi.png` |
+| `flybody_corridor` | `timeseries.csv`, `flybody_corridor.png`, `flybody_corridor.mp4` (chase and top views; below, what both eyes see) |
 | `benchmark_speed` | `benchmark.json`, `benchmark.txt`: wall-clock time per simulated second of flyvis |
 | `animate_corridor` | `corridor_animation.mp4` (or `.gif`) from a finished `corridor` run |
 | `animate_corridor_activity` | `viz/corridor_activity_trial<k>.mp4`: a recorded corridor trial from above, with its photoreceptor and T4/T5 maps |
@@ -177,19 +182,29 @@ configs). Each stage is a replaceable part:
 
 - **Worlds** expose `luminance(azimuth, elevation)`: `Drum` and `SphereWorld` at
   infinity, `VerticalGrating`. `Corridor` is at finite distance, so the eyes cast
-  rays from the body's position.
+  rays from the body's position (`luminance_at(origin, directions)`).
+  `MujocoWorld` (`flyloop.sim.mujoco_world`, flybody extra) has the same interface
+  but renders a MuJoCo scene: an unlit cube map at the viewpoint, read along the
+  eyes' viewing directions with prefiltering matched to the sample spacing. It
+  uses MuJoCo's OpenGL renderer (the GPU where there is one; set `MUJOCO_GL=egl`
+  or `osmesa` on a headless node). `tests/test_mujoco_world.py` checks it against
+  `Corridor`: the photoreceptor input and the HS/VS responses agree.
 - **`VisualRig`** steps the two eyes through flyvis and the LPTC layer.
 - **Decoders** turn HS/VS voltages into estimates. `RotationDecoder` uses templates
   from anatomy, calibrated in deg/s; `LinearReadout` is fitted by regression.
 - **Controllers** turn estimates into a steering command: `PDController`,
-  `CorridorController` and `EfferenceCentering`.
+  `CorridorController`, `EfferenceCentering` and `SaccadicController`. The last
+  flies straight and turns in fixed saccades away from the nearer wall; its
+  efference copy suppresses vision during each turn.
 - **Bodies** implement `flyloop.sim.Body` (`reset`, `step(command, dt, disturbance)`,
   `orientation`, `position`). `KinematicBody` has first-order rotation about roll,
   pitch and yaw and a constant forward speed; `FlybodyBody` is the MuJoCo prototype.
 
 Perturbations are hooks on this single pipeline, never forks of it. For example,
 `flyloop.perturb.set_t4t5_output` blocks T4/T5 output per subtype, as the
-silencing in Leonte et al. (2021) did. The LPTC time constants come from a preset
+silencing in Leonte et al. (2021) did, and `flyloop.perturb.set_noise` adds Gaussian
+noise at the photoreceptors, at T4/T5 or at HS/VS (SD per frame; calibration in
+the `noise` experiment is always noise-free). The LPTC time constants come from a preset
 (`lptc.preset=simple`, 10 ms placeholder values, or `literature`, 3 ms from blowfly
 membrane properties; see `src/flyloop/lptc/model.py`).
 
@@ -200,9 +215,9 @@ src/flyloop/
   vision/       pretrained flyvis wrapper returning T4/T5 time series
   lptc/         HS/VS rate model with LPi inhibition; connectome or simple weights
   connectome/   neuPrint optic-lobe:v1.1 loaders, alignment of its columns to flyvis
-  control/      rotation decoder, fitted readout, PD / corridor / efference controllers
+  control/      rotation decoder, fitted readout, PD / corridor / efference / saccadic controllers
   sim/          worlds, visual rig, bodies, closed loop
-  perturb/      T4/T5 silencing
+  perturb/      T4/T5 silencing, noise at photoreceptors, T4/T5 or HS/VS
   metrics/      direction selectivity, preferred direction, peak responses
   plotting.py   shared figure style
   viz.py        activity viewer: records photoreceptor input and T4/T5 maps per frame
@@ -272,7 +287,7 @@ and closed loop (behaviour).
 | # | Question | Manipulation | Closed-loop metric | Status |
 | --- | --- | --- | --- | --- |
 | 1 | Resolution of direction selectivity needed | Subsample columns, coarsen LPTC receptive fields, fewer direction subtypes | Heading error RMS, corridor collision rate | planned |
-| 2 | Variance in cell responses | Noise at photoreceptors, T4/T5, HS/VS separately | Behaviour drop per unit DSI drop, per stage | planned |
+| 2 | Variance in cell responses | Noise at photoreceptors, T4/T5, HS/VS separately | Behaviour drop per unit DSI drop, per stage | `noise`: efference-copy corridor centering, one model |
 | 3 | Synaptic time constants | Scale learned taus of T4 inputs (Mi1, Tm3, Mi4, Mi9) and T5 inputs (Tm1, Tm2, Tm4, Tm9); low-pass at LPTC synapses | Temporal-frequency tuning shift, onset of yaw oscillation | LPTC time-constant presets only |
 | 4 | Is one class enough for same-function types | Ablate or merge subtypes (T4 only, T5 only, single HS, pooled VS) | Gap between bright- and dark-dominated environments | T4-only and T5-only in `closedloop` |
 | 5 | Learned controller on the visual outputs | RL (PPO/SAC) or a surrogate-gradient spiking controller vs the PD baseline | Sample efficiency, final performance, transfer to unseen statistics | planned |
@@ -298,6 +313,8 @@ Papers:
 - Borst, Haag and Mauss, J Comp Physiol A 2020: how fly neurons compute the direction of motion
 - Borst and Haag, J Comput Neurosci 1996: passive properties of tangential cells
 - Leonte et al., J Exp Biol 2021: motion-blind flies fail course stabilization
+- Tammero and Dickinson, J Exp Biol 2002: free-flight saccades away from the nearer wall
+- Kim, Fitzgerald and Maimon, Nat Neurosci 2015: efference copy in HS cells during flight saccades
 - Pokusaeva et al., Nat Commun 2024: HS-H2 bilateral coupling
 - Vaxenburg et al., Nature 2025: flybody
 - Wang-Chen et al., Nature Methods 2024: NeuroMechFly v2, flyvis in a closed loop

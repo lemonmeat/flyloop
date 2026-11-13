@@ -1,12 +1,14 @@
 """flybody (MuJoCo) fly as a closed-loop Body, flying inside a MuJoCo corridor.
 
-Prototype for visualization; not validated. Needs the flybody extra:
+Prototype; the flight itself is not validated. Needs the flybody extra:
     python tasks.py env --extras flybody
 
-Vision is unchanged: the eyes keep ray-casting the analytic flyloop Corridor from
-the fly's pose. MuJoCo carries the body (flybody's fly with flight settings,
-wings driven open loop by its wing beat pattern generator) and a copy of the
-corridor walls with the same textures, for rendering only.
+MuJoCo carries the body (flybody's fly with flight settings, wings driven open
+loop by its wing beat pattern generator) and a copy of the corridor walls with
+the same textures. The eyes can see either scene: the analytic flyloop Corridor,
+ray-cast from the fly's pose, or the MuJoCo scene, rendered from the fly's head
+(`FlybodyBody.vision_world`, see flyloop.sim.mujoco_world). The two agree
+(tests/test_mujoco_world.py).
 
 There is no trained flight controller here (the released ones need TensorFlow and
 a reference-trajectory interface). Instead the steering command acts as a torque
@@ -18,8 +20,9 @@ so yaw responds as in the kinematic runs. `assist` decides what else holds the
 fly up:
     "full"      an autopilot wrench holds forward speed, height and zero
                 sideslip (PI on velocity, so it absorbs the mean wing force) and
-                level roll/pitch (PD); the wings still flap and their aerodynamic
-                forces still act.
+                level roll/pitch (PID); the wings still flap and their aerodynamic
+                forces still act. Roll and pitch also carry an integral term,
+                so the fly flies level despite the wings' mean pitching moment.
     "yaw_only"  only the yaw torque: the open-loop wings alone keep the fly in
                 the air (they do not; it falls or tumbles).
 
@@ -41,8 +44,7 @@ from flybody.tasks.task_utils import neg_quat
 
 from .body import Body
 from .corridor import Corridor
-
-CEILING_GROUP = 3  # geom group of the ceiling, hidden in views from above
+from .mujoco_world import CEILING_GROUP, CorridorArena, MujocoWorld
 
 
 def _quat_mul(a, b):
@@ -57,68 +59,6 @@ def _quat_mul(a, b):
 def _yaw_quat(deg):
     h = np.radians(deg) / 2
     return np.array([np.cos(h), 0.0, 0.0, np.sin(h)])
-
-
-def _write_png(img: np.ndarray, path: Path, upsample: int) -> None:
-    import imageio.v3 as iio
-    g = np.clip(np.kron(img, np.ones((upsample, upsample))), 0, 1)
-    rgb = (np.repeat(np.flipud(g)[..., None], 3, axis=2) * 255).astype(np.uint8)
-    iio.imwrite(path, rgb)
-
-
-class CorridorArena(composer.Arena):
-    """The flyloop Corridor as textured quads (cm): floor at z = 0, walls at
-    y = +-W/2, ceiling at z = H; textures repeat every corridor.length."""
-
-    def _build(self, corridor: Corridor, scale_cm: float, texture_dir: Path,
-               n_periods: int = 2, upsample: int = 8, name: str = "corridor"):
-        super()._build(name=name)
-        W, H = corridor.width * scale_cm, corridor.height * scale_cm
-        L = corridor.length * scale_cm
-        self.centre_cm = np.array([0.0, 0.0, H / 2])
-        x0, x1 = -n_periods * L, n_periods * L
-        u0 = -n_periods  # texture periods along x
-        root = self.mjcf_model
-        # the fly model brings its own headlight; avoid conflicting values
-        for k in ("ambient", "diffuse", "specular"):
-            setattr(root.visual.headlight, k, None)
-        root.asset.add("texture", name="sky", type="skybox", builtin="gradient",
-                       rgb1=(0.55, 0.65, 0.8), rgb2=(0.1, 0.1, 0.15), width=64, height=64)
-        texture_dir.mkdir(parents=True, exist_ok=True)
-        quads = {  # surface: corners, geom group
-            "left": ([[x0, W / 2, 0], [x0, W / 2, H], [x1, W / 2, H], [x1, W / 2, 0]], 0),
-            "right": ([[x0, -W / 2, 0], [x1, -W / 2, 0], [x1, -W / 2, H], [x0, -W / 2, H]], 0),
-            "floor": ([[x0, -W / 2, 0], [x0, W / 2, 0], [x1, W / 2, 0], [x1, -W / 2, 0]], 0),
-            "ceiling": ([[x0, -W / 2, H], [x1, -W / 2, H], [x1, W / 2, H], [x0, W / 2, H]],
-                        CEILING_GROUP),
-        }
-        self._ground_geom = None
-        for surface, (corners, group) in quads.items():
-            if not corridor.present[surface]:
-                continue
-            png = texture_dir / f"{surface}.png"
-            _write_png(corridor.pyramids[surface][0], png, upsample)
-            c = np.array(corners, float)
-            # u along x (periods); v across the surface (0..1), as Corridor._sample
-            v_axis = 2 if surface in ("left", "right") else 1
-            span = H if v_axis == 2 else W
-            off = 0.0 if v_axis == 2 else W / 2
-            uv = np.stack([u0 + (c[:, 0] - x0) / L, (c[:, v_axis] + off) / span], 1)
-            root.asset.add("texture", name=f"tex_{surface}", type="2d", file=str(png))
-            root.asset.add("material", name=f"mat_{surface}", texture=f"tex_{surface}",
-                           emission=0.35, specular=0.0, shininess=0.0)
-            root.asset.add("mesh", name=f"mesh_{surface}", vertex=c.ravel(),
-                           texcoord=uv.ravel(), inertia="shell",
-                           face=[0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2])  # two-sided
-            geom = root.worldbody.add("geom", name=surface, type="mesh",
-                                      mesh=f"mesh_{surface}", material=f"mat_{surface}",
-                                      group=group, contype=0, conaffinity=0)
-            if surface == "floor":
-                self._ground_geom = geom
-
-    @property
-    def ground_geoms(self):
-        return () if self._ground_geom is None else (self._ground_geom,)
 
 
 class CorridorFlight(Flying):
@@ -187,6 +127,7 @@ class FlybodyBody(Body):
         walker = self.task.walker
         self._thorax = self.physics.bind(walker.thorax).element_id
         self._site = self.physics.bind(walker.mjcf_model.find("site", "hover_up_dir")).element_id
+        self._head = self.physics.bind(walker.mjcf_model.find("site", "head")).element_id
         self._up_quat = np.array(walker.mjcf_model.find("site", "hover_up_dir").quat, float)
         # the free joint sits on the attachment frame above the thorax
         self._root = int(self.model.body_rootid[self._thorax])
@@ -194,8 +135,19 @@ class FlybodyBody(Body):
         self.mass = float(self.model.body_subtreemass[self._root])
         self.g = float(np.linalg.norm(self.model.opt.gravity))
         self.n_ctrl = round(self.task.control_timestep / self.task.physics_timestep)
-        self.qpos_log: list[np.ndarray] = []  # one per step, for replay rendering
+        # one per step, for replay rendering: joint positions, and the pose the
+        # eyes were given next (averaged over the frame if average_pose)
+        self.qpos_log: list[np.ndarray] = []
+        self.pose_log: list[tuple[np.ndarray, np.ndarray]] = []
         self.reset()
+
+    def vision_world(self, **kwargs) -> MujocoWorld:
+        """The MuJoCo scene as the world the eyes see, from the fly's head (the
+        `head` site, between the eyes). Viewing directions still come from the
+        body attitude the loop passes to the eyes; head movements relative to
+        the thorax are not modelled."""
+        return MujocoWorld(self.model, self.data, self.arena.centre_cm, self.scale_cm,
+                           viewpoint=lambda: self.data.site_xpos[self._head], **kwargs)
 
     # --- pose -------------------------------------------------------------------
 
@@ -258,7 +210,8 @@ class FlybodyBody(Body):
         self._force_i = np.zeros(3)  # acceleration units, cm/s^2
         self._yaw_ref = 0.0  # deg/s
         self._yaw_i = 0.0  # rad/s^2
-        self.qpos_log = []
+        self._tilt_i = np.zeros(2)  # rad/s^2, roll and pitch
+        self.qpos_log, self.pose_log = [], []
         self._update_state(*self._site_pose())
 
     def _wrench(self, yaw_target_deg_s: float) -> np.ndarray:
@@ -275,8 +228,11 @@ class FlybodyBody(Body):
         if self.assist == "full":
             ez = np.array([0.0, 0.0, 1.0])
             tilt = R.T @ np.cross(R[:, 2], ez)  # axis-angle (small) back to level
+            # PID: the integral cancels the mean pitching moment of the wings,
+            # which a PD alone balances only by flying nose-down (about 11 deg)
             kp, kd = 1.0 / self.tau_att_s ** 2, 2.0 / self.tau_att_s
-            alpha[:2] = kp * tilt[:2] - kd * w_loc[:2]
+            self._tilt_i += tilt[:2] * self.task.control_timestep * kp / (4 * self.tau_att_s)
+            alpha[:2] = kp * tilt[:2] - kd * w_loc[:2] + self._tilt_i
             fwd = R[:, 0] - R[2, 0] * ez
             fwd /= max(np.linalg.norm(fwd), 1e-9)
             z = self.data.subtree_com[self._root][2] - self.arena.centre_cm[2]
@@ -317,16 +273,24 @@ class FlybodyBody(Body):
         self._update_state(R, p)
         self.angle_deg = self.angle_deg + self.omega * dt
         self.qpos_log.append(self.data.qpos.copy())
+        self.pose_log.append((self.orientation.copy(), self.position.copy()))
 
 
 class Replay:
-    """Render logged qpos frames from a tracking chase view and a top view."""
+    """Render logged frames: a tracking chase view and a top view and, if eyes
+    and the world they looked at are given, what the photoreceptors of both eyes
+    saw (a second row)."""
 
-    def __init__(self, body: FlybodyBody, height: int = 480, width: int = 640):
-        self.body = body
+    def __init__(self, body: FlybodyBody, height: int = 480, width: int = 640,
+                 eyes=None, world=None, eye_title: str = "photoreceptor input"):
+        self.body, self.eyes, self.world = body, eyes, world
         self.renderer = mujoco.Renderer(body.model, height, width)
         self.opt_top = mujoco.MjvOption()
         self.opt_top.geomgroup[CEILING_GROUP] = 0
+        self.mosaic = None
+        if eyes is not None:
+            from flyloop.viz import EyeMosaic
+            self.mosaic = EyeMosaic(eyes.lattice.n_hexals, 2 * width, title=eye_title)
 
     def _cam(self, lookat, distance, azimuth, elevation):
         cam = mujoco.MjvCamera()
@@ -335,9 +299,10 @@ class Replay:
         cam.distance, cam.azimuth, cam.elevation = distance, azimuth, elevation
         return cam
 
-    def frame(self, qpos: np.ndarray) -> np.ndarray:
+    def frame(self, i: int) -> np.ndarray:
+        """Frame i of the body's log."""
         b = self.body
-        b.data.qpos[:] = qpos
+        b.data.qpos[:] = b.qpos_log[i]
         mujoco.mj_forward(b.model, b.data)
         R = b.data.site_xmat[b._site].reshape(3, 3)
         heading_deg = np.degrees(np.arctan2(R[1, 0], R[0, 0]))
@@ -348,8 +313,12 @@ class Replay:
         self.renderer.update_scene(b.data, self._cam(top_at, 1.9 * b.scale_cm, 90, -89.9),
                                    scene_option=self.opt_top)
         top = self.renderer.render()
-        return np.concatenate([chase, top], axis=1)
+        out = np.concatenate([chase, top], axis=1)
+        if self.mosaic is not None:
+            orientation, position = b.pose_log[i]
+            seen = self.eyes.sample(self.world, orientation=orientation, position=position)
+            out = np.concatenate([out, self.mosaic.image(seen[:, 0])], axis=0)
+        return out
 
     def close(self):
         self.renderer.close()
-

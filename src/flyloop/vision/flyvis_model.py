@@ -73,9 +73,14 @@ class FlyvisModel:
         recorder: Optional `flyloop.viz.ActivityRecorder`. When set, every stepped
             frame's input and T4/T5 activity are passed to it, and each
             `init_state` starts a new trial.
+        noise: Optional `flyloop.perturb.Noise` (see `flyloop.perturb.set_noise`).
+            When set, every stepped frame gets photoreceptor noise and every
+            readout T4/T5 noise. The grey steady initial state and
+            `simulate(return_activity=True)` stay noise-free.
     """
 
     recorder = None
+    noise = None
 
     def __init__(
         self,
@@ -271,6 +276,9 @@ class FlyvisModel:
 
     def _integrate(self, frames, state, readout):
         frames = torch.as_tensor(frames, dtype=torch.float32, device=self.device)
+        noise = self.noise
+        if noise is not None:
+            frames = noise.photoreceptors(frames)
         params = self._params()
         stim = self.network.stimulus
         stim.zero(frames.shape[0], frames.shape[1])
@@ -281,7 +289,9 @@ class FlyvisModel:
         recorder = self.recorder
         for i in range(x.shape[1]):
             state = self.network._next_state(params, state, x[:, i], self.dt)
-            readout(state.nodes.activity)
+            # T4/T5 noise is added to what is read out, not to the network state
+            act = state.nodes.activity if noise is None else noise.activity(state.nodes.activity)
+            readout(act)
             if recorder is not None:
-                recorder.record(frames[:, i, 0], state.nodes.activity)
+                recorder.record(frames[:, i, 0], act)
         return state

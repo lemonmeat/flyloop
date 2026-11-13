@@ -29,6 +29,9 @@ corridor:              # width 1; flow at a wall scales as speed / distance
   train_seed: 0        # wall textures used for calibration
   test_seed: 1         # unseen wall textures used for every closed-loop trial
 
+calibration: null      # path to a saved calibration.npz: skip calibration and fitting
+calibrate_only: false  # stop after saving calibration.npz (no closed-loop trials)
+
 speed: 0.5             # corridor widths per s (wall flow at centre ~57 deg/s)
 body_tau_s: 0.05
 collision_margin: 0.03 # crash when |y| > 0.5 - margin
@@ -39,6 +42,8 @@ sysid:                 # open-loop trajectories for the fitted (vision-only) rea
   t_traj: 3.0
   t_skip: 0.5
   max_amplitude_deg: 40.0
+  attitude_deg: 0.0    # each flight holds a random pitch and roll within +- this
+  height: 0.0          # ... and a random height within +- this (corridor widths)
   filter_taus_s: [0.1, 0.5]
   ridge: 0.001
 
@@ -46,6 +51,14 @@ controllers:
   optomotor: {kp: 5.0, kd: 1.0}                    # PD on HS yaw estimate (as closedloop)
   readout: {kd: 0.5, kc: 150.0, kh: 5.0, ki: 0.0, filter_tau_s: 0.1}
   efference: {kc: 150.0, kh: 3.0, heading: visual, filter_tau_s: 0.5}
+  saccade:             # straight flight and fixed turns away from the nearer wall
+    amplitude_deg: 20.0
+    duration_s: 0.05   # command pulse of amplitude / duration deg/s
+    threshold: 0.1     # offset (widths) expected lookahead_s ahead that triggers a turn
+    lookahead_s: 1.0
+    suppress_s: 0.2    # no visual input for this long after each turn
+    filter_tau_s: 0.5
+    derivative_tau_s: 0.2
 
 starts:                # (lateral offset, heading deg) when the loop closes
   - [0.25, 0.0]

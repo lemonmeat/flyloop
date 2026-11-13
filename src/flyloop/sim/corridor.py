@@ -87,7 +87,9 @@ class Corridor:
         with np.errstate(divide="ignore", invalid="ignore"):
             for k, (axis, c, _) in enumerate(planes.values()):
                 t = (c - o[axis]) / d[..., axis]
-                hit = (t > 0) & (t < t_best) & np.isfinite(t)
+                # a ray (almost) parallel to a surface meets it too far away to
+                # index the texture; it shows mean_lum, like a ray that never hits
+                hit = (t > 0) & (t < t_best) & (t < 1e3 * self.length)
                 t_best = np.where(hit, t, t_best)
                 which = np.where(hit, k, which)
         out = np.full(d.shape[:-1], self.mean_lum, np.float32)

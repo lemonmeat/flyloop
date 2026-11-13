@@ -32,9 +32,10 @@ class LinearReadout:
 
     def __init__(self, outputs: tuple[str, ...], cells: list[str], use=("HS", "VS"),
                  filter_taus_s=(), dt: float = 0.01):
-        self.outputs = tuple(outputs)
-        self.mask = np.array([c.startswith(tuple(use)) for c in cells])
-        self.alphas = [1.0 - np.exp(-dt / t) for t in filter_taus_s]
+        self.outputs, self.use = tuple(outputs), tuple(use)
+        self.filter_taus_s = tuple(float(t) for t in filter_taus_s)
+        self.mask = np.array([c.startswith(self.use) for c in cells])
+        self.alphas = [1.0 - np.exp(-dt / t) for t in self.filter_taus_s]
         n = 2 * int(self.mask.sum()) * (1 + len(self.alphas))
         self.W = np.zeros((len(outputs), n))
         self.b = np.zeros(len(outputs))

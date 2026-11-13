@@ -102,6 +102,8 @@ class LPTCLayer:
         self.w_lpi_out = t(_row_normalize(weights.lpi_out) * weights.lpi_sign[None])
         # ablation masks over the 8 T4/T5 subtypes (1 = intact)
         self.subtype_gain = torch.ones(8, device=self.w_exc.device)
+        # optional flyloop.perturb.Noise: noise on the returned HS/VS voltages
+        self.noise = None
 
     @property
     def cells(self) -> list[str]:
@@ -134,5 +136,5 @@ class LPTCLayer:
             lpi = lpi + a_lpi * (-lpi + p.g_lpi * r @ self.w_lpi_in.T)
             drive = p.g_exc * r @ self.w_exc.T + p.g_inh * torch.relu(lpi) @ self.w_lpi_out.T
             v = v + a_v * (-v + drive)
-            out.append(v)
+            out.append(v if self.noise is None else self.noise.lptc(v))
         return torch.stack(out, 1), {"v": v, "lpi": lpi}

@@ -1,5 +1,6 @@
-# Visualization demo: the flybody (MuJoCo) fly in the corridor, steered by the
-# optomotor PD on the HS yaw estimate. Not validated; see flyloop.sim.flybody_body.
+# Prototype: the flybody (MuJoCo) fly in the corridor, seeing the MuJoCo scene and
+# steered by one of the corridor controllers. The flight is held up
+# artificially; see flyloop.sim.flybody_body and flyloop.sim.mujoco_world.
 # Run: python tasks.py run flybody_corridor [key=value ...]
 # Needs the flybody extra: python tasks.py env --extras flybody
 
@@ -31,6 +32,9 @@ corridor:              # as configs/corridor.yaml (width 1)
   seed: 1
 
 flybody:
+  vision: mujoco       # what the eyes see: mujoco (rendered from the fly's head) or
+                       # analytic (the ray-cast Corridor, as configs/corridor.yaml)
+  face_px: 128         # pixels along each face of the rendered cube map
   scale_cm: 5.0        # corridor width in cm; fly speed = speed * scale_cm cm/s
   assist: full         # full (autopilot holds speed/height/attitude) or yaw_only
   tau_lin_s: 0.05
@@ -39,7 +43,14 @@ flybody:
 
 speed: 0.5             # corridor widths per s
 body_tau_s: 0.05
-optomotor: {kp: 5.0, kd: 1.0}
+controller: optomotor  # optomotor, readout, efference or saccade (as configs/corridor.yaml)
+calibration: null      # calibration.npz of a corridor run; all but optomotor need it
+controllers:           # gains as configs/corridor.yaml
+  optomotor: {kp: 5.0, kd: 1.0}
+  readout: {kd: 0.5, kc: 150.0, kh: 5.0, ki: 0.0, filter_tau_s: 0.1}
+  efference: {kc: 150.0, kh: 3.0, heading: visual, filter_tau_s: 0.5}
+  saccade: {amplitude_deg: 20.0, duration_s: 0.05, threshold: 0.1, lookahead_s: 1.0,
+            suppress_s: 0.2, filter_tau_s: 0.5, derivative_tau_s: 0.2}
 start: [0.15, 10.0]    # lateral offset (widths), heading (deg) when the loop closes
 torque_deg_s: 20.0     # constant yaw torque (simulated wing imbalance)
 t_run: 5.0

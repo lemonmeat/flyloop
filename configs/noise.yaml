@@ -1,0 +1,89 @@
+# Noise sweep: Gaussian noise at photoreceptors, T4/T5 or HS/VS, scored open loop
+# (T4/T5 and HS direction selectivity) and closed loop (efference-copy corridor
+# centering). Calibration is always noise-free.
+# Run: python tasks.py run noise [index=N] [key=value ...]
+# Then: python tasks.py run summarize_noise
+
+defaults:
+  - common
+  - _self_
+
+sweep: noise
+
+model: flow/0000/000
+dt: 0.01
+
+eyes:
+  axis_azimuth_deg: 80.0
+  n_sub: 3
+
+lptc:
+  source: connectome
+  preset: simple       # LPTC/LPi time constants: simple (10 ms) or literature (3 ms)
+  tau_lptc: null       # s; set to override the preset
+  tau_lpi: null
+
+# SD of the noise at each stage, per frame of length dt (see flyloop.perturb.noise).
+# Clean signal sizes in straight corridor flight with the settings below, for scale:
+#   photoreceptor  luminance 0..1, SD 0.33 across columns and time
+#   t4t5           voltage SD over time of one cell 0.2 to 0.6, by subtype
+#   lptc           HS voltage about 0.1; SD over time 0.005; HS left minus right
+#                  changes by 0.03 for an offset of 0.2 corridor widths
+noise:
+  photoreceptor: 0.0
+  t4t5: 0.0
+  lptc: 0.0
+  repeats: 5          # closed-loop trials per start, each with fresh noise (1 without noise)
+
+corridor:              # as configs/corridor.yaml
+  pattern: checker
+  square: 0.1
+  alpha: 1.0
+  contrast: 1.0
+  length: 8.0
+  train_seed: 0        # wall textures used for calibration
+  test_seed: 1         # unseen wall textures used for every closed-loop trial
+
+speed: 0.5             # corridor widths per s
+body_tau_s: 0.05
+collision_margin: 0.03 # crash when |y| > 0.5 - margin
+
+controller: {kc: 150.0, kh: 3.0, heading: visual, filter_tau_s: 0.5}  # EfferenceCentering
+
+starts:                # (lateral offset, heading deg) when the loop closes
+  - [0.25, 0.0]
+  - [-0.25, 0.0]
+  - [0.0, 30.0]
+  - [0.0, -30.0]
+t_run: 12.0
+t_settle: 1.0
+t_score: 4.0
+
+openloop:
+  omega_deg_s: 90.0    # yaw rotation of the checkerboard sphere, both ways (HS)
+  t_move: 1.5          # the last half is scored
+  square_deg: 20.0
+  edges:               # moving ON and OFF edges (T4/T5), as configs/openloop_tuning.yaml
+    directions_deg: [0, 45, 90, 135, 180, 225, 270, 315]
+    speed_deg_s: 110.2
+    start_deg: -100.0
+    end_deg: 100.0
+    t_pre: 1.0
+    t_post: 0.5
+    n_sub: 5
+    window_deg: 22.5
+
+sweep_list:            # index 0 is the noise-free reference
+  - {noise: {photoreceptor: 0.0}}
+  - {noise: {photoreceptor: 0.1}}
+  - {noise: {photoreceptor: 0.2}}
+  - {noise: {photoreceptor: 0.4}}
+  - {noise: {photoreceptor: 0.8}}
+  - {noise: {t4t5: 0.3}}
+  - {noise: {t4t5: 1.0}}
+  - {noise: {t4t5: 3.0}}
+  - {noise: {t4t5: 10.0}}
+  - {noise: {lptc: 0.01}}
+  - {noise: {lptc: 0.03}}
+  - {noise: {lptc: 0.1}}
+  - {noise: {lptc: 0.3}}
