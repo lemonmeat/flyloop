@@ -78,8 +78,7 @@ def set_noise(rig, photoreceptor: float = 0.0, t4t5: float = 0.0, lptc: float = 
     replacing any earlier noise. All zeros removes it. Returns the Noise (or None)."""
     noise = None
     if photoreceptor or t4t5 or lptc:
-        layers = rig.model.network.connectome.nodes.layer_index
-        index = np.concatenate([layers[t][:] for t in T4T5])
+        index = np.concatenate([rig.model.nodes_of(t) for t in T4T5])
         noise = Noise(index, photoreceptor, t4t5, lptc, seed, device=rig.model.device)
     rig.model.noise = noise
     rig.lptc.noise = noise

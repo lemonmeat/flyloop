@@ -35,7 +35,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
 from flyloop.control import AXIS_VECTORS, PDController, RotationDecoder, calibrate_decoder
-from flyloop.eyes import Eyes
+from flyloop.eyes import make_eyes
 from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights
 from flyloop.perturb import set_t4t5_output
 from flyloop.plotting import CATEGORICAL, INK, MUTED, SURFACE, style_axes
@@ -221,14 +221,14 @@ def main(cfg: DictConfig) -> None:
     out_dir = Path(HydraConfig.get().runtime.output_dir)
     t0 = time.time()
     dt = cfg.dt
-    eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
-    w = LPTCWeights.from_source(cfg.lptc.source)
+    eyes = make_eyes(cfg.eyes)
+    w = LPTCWeights.from_source(cfg.lptc.source, eyes.lattice)
     params = LPTCParams.from_config(cfg.lptc)
     models = list(cfg.models)
     meta = recorder = None
     scores, series, calib = [], [], []
     for model_name in models:
-        model = FlyvisModel(model_name, dt=dt)
+        model = FlyvisModel(model_name, dt=dt, columns=eyes.columns)
         if meta is None:
             meta = write_run_metadata(out_dir, cfg, device=str(model.device))
         recorder = attach_recorder(cfg, model, recorder)

@@ -38,7 +38,7 @@ from run_corridor import fly_path, make_corridor, score
 from run_openloop_tuning import compute_metrics, summarize
 
 from flyloop.control import EfferenceCentering, RotationDecoder, calibrate_decoder
-from flyloop.eyes import Eyes
+from flyloop.eyes import Eyes, make_eyes
 from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights
 from flyloop.metrics import peak_response
 from flyloop.perturb import STAGES, set_noise
@@ -146,7 +146,10 @@ def main(cfg: DictConfig) -> None:
     model = FlyvisModel(cfg.model, dt=dt)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
     recorder = attach_recorder(cfg, model)
-    eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
+    eyes = make_eyes(cfg.eyes)
+    if not isinstance(eyes, Eyes):
+        # the open-loop score uses moving edges drawn on the flyvis lattice
+        raise ValueError("the noise experiment runs on the flyvis hexagon: eyes.model=hexagon")
     w = LPTCWeights.from_source(cfg.lptc.source)
     rig = VisualRig(eyes, model, LPTCLayer(w, dt, LPTCParams.from_config(cfg.lptc)))
     train = make_corridor(cfg, cfg.corridor.train_seed)

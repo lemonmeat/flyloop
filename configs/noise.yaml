@@ -14,8 +14,7 @@ model: flow/0000/000
 dt: 0.01
 
 eyes:
-  axis_azimuth_deg: 80.0
-  n_sub: 3
+  model: hexagon       # the open-loop score uses moving edges drawn on the flyvis lattice
 
 lptc:
   source: connectome

@@ -56,7 +56,7 @@ from flyloop.control import (
     calibrate_decoder,
     calibration_settings,
 )
-from flyloop.eyes import Eyes
+from flyloop.eyes import make_eyes
 from flyloop.geometry import rotation_matrix
 from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights
 from flyloop.perturb import set_t4t5_output
@@ -80,10 +80,14 @@ CTRL_COLORS = {"none": MUTED, "optomotor": CATEGORICAL[0], "readout": CATEGORICA
                "efference": CATEGORICAL[2], "saccade": CATEGORICAL[3]}
 
 
-def make_corridor(cfg, seed: int) -> Corridor:
+def make_corridor(cfg, seed: int, spacing_deg: float | None = None) -> Corridor:
+    """The corridor of a config, prefiltered for the spacing of the eyes' samples
+    (default: that of the config's eyes)."""
     c = cfg.corridor
+    if spacing_deg is None:
+        spacing_deg = make_eyes(cfg.eyes).sample_spacing_deg
     return Corridor(length=c.length, pattern=c.pattern, square=c.square, alpha=c.alpha,
-                    contrast=c.contrast, seed=seed)
+                    contrast=c.contrast, sample_spacing_deg=spacing_deg, seed=seed)
 
 
 def fly_path(rig: VisualRig, world, x0: float, y0: float, psi_fn, speed: float, t: float,
@@ -231,14 +235,14 @@ def main(cfg: DictConfig) -> None:
     t0 = time.time()
     dt = cfg.dt
     rng = np.random.default_rng(cfg.seed)
-    model = FlyvisModel(cfg.model, dt=dt)
+    eyes = make_eyes(cfg.eyes)
+    model = FlyvisModel(cfg.model, dt=dt, columns=eyes.columns)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
     recorder = attach_recorder(cfg, model)
-    eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
-    w = LPTCWeights.from_source(cfg.lptc.source)
+    w = LPTCWeights.from_source(cfg.lptc.source, eyes.lattice)
     rig = VisualRig(eyes, model, LPTCLayer(w, dt, LPTCParams.from_config(cfg.lptc)))
-    train = make_corridor(cfg, cfg.corridor.train_seed)
-    test = make_corridor(cfg, cfg.corridor.test_seed)
+    train = make_corridor(cfg, cfg.corridor.train_seed, eyes.sample_spacing_deg)
+    test = make_corridor(cfg, cfg.corridor.test_seed, eyes.sample_spacing_deg)
     limit = 0.5 - cfg.collision_margin
 
     decoder = RotationDecoder(w, eyes)

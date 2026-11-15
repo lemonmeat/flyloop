@@ -22,6 +22,7 @@ dependencies = [
   "hydra-core>=1.3",
   "omegaconf",
   "neuprint-python",
+  "rdata",            # reads the eye map of Zhao et al. 2025 (R data files)
   "python-dotenv",
 ]
 

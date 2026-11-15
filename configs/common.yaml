@@ -13,7 +13,18 @@ hydra:
   job:
     chdir: false
 
-# Activity viewer (flyloop.viz): photoreceptor input and T4/T5 maps of each frame.
+# The eyes (flyloop.eyes.make_eyes), for the experiments that render a world.
+eyes:
+  model: ommatidia           # ommatidia: the 892 columns of the connectome, each looking where
+                             # the eye's ommatidium looks (needs `tasks.py connectome`);
+                             # hexagon: flyvis's flat lattice of 721 columns
+  acceptance_angle_deg: 7.7  # ommatidia: full width at half maximum of a photoreceptor's
+                             # angular sensitivity (light-adapted R1-6, Juusola et al. 2017)
+  sample_spacing_deg: 2.0    # ommatidia: spacing of the directions the world is read along
+  axis_azimuth_deg: 80.0     # hexagon: angle between each eye's axis and straight ahead
+  n_sub: 3                   # hexagon: n_sub x n_sub points averaged per column
+
+# Activity viewer (flyloop.viz): photoreceptor input, T4/T5 maps and HS/VS of each frame.
 # A trial starts at every network reset; trial labels are listed in viz/activity.npz.
 viz:
   enabled: false       # record and write <run>/viz/ (activity.npz, trial_<k>.png, activity.mp4)

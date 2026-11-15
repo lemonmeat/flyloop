@@ -1,4 +1,11 @@
-"""Thin wrapper around a pretrained flyvis network for T4/T5 readout."""
+"""Thin wrapper around a pretrained flyvis network for T4/T5 readout.
+
+By default the network is flyvis's own, on its hexagon of 721 columns. Given
+`columns` (for example the eye's columns, `flyloop.connectome.eyemap.EyeColumns`),
+the same cells and connections are laid out on those columns instead
+(`flyloop.vision.column_network.ColumnNetwork`), and every input, readout and
+recording has one entry per column of that set.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +17,8 @@ import numpy as np
 import torch
 
 import flyloop  # configures flyvis (root dir, device) before it is imported
+
+from .column_network import ColumnNetwork
 
 T4T5 = ("T4a", "T4b", "T4c", "T4d", "T5a", "T5b", "T5c", "T5d")
 
@@ -68,8 +77,14 @@ class FlyvisModel:
             frame over t_init), or "none" (flyvis's default initial state).
         t_init: Duration used to compute the initial state.
         checkpoint: flyvis checkpoint selector ("best" or an index).
+        columns: Columns to build the network on: an object with integer flyvis
+            lattice coordinates `u` and `v` (`EyeColumns`, `HexLattice`). None
+            keeps flyvis's own network and its 721 columns.
 
     Attributes:
+        network: The pretrained flyvis `Network`. With `columns` it is only the
+            source of the constants; `engine` is what runs.
+        engine: The `ColumnNetwork` on `columns`, or None.
         recorder: Optional `flyloop.viz.ActivityRecorder`. When set, every stepped
             frame's input and T4/T5 activity are passed to it, and each
             `init_state` starts a new trial.
@@ -90,6 +105,7 @@ class FlyvisModel:
         initial_state: Literal["steady", "fade_in", "none"] = "steady",
         t_init: float = 1.0,
         checkpoint: str | int = "best",
+        columns=None,
     ):
         from flyvis import NetworkView
 
@@ -103,6 +119,9 @@ class FlyvisModel:
         self.network.eval()
         self.device = next(self.network.parameters()).device
         _check_device(self.device)
+        self.columns = columns
+        self.engine = (None if columns is None
+                       else ColumnNetwork(self.network, columns.u, columns.v))
         self.set_cell_types(cell_types)
 
     # --- readout indices ---------------------------------------------------------
@@ -113,10 +132,13 @@ class FlyvisModel:
         missing = [t for t in cell_types if t not in unique]
         if missing:
             raise ValueError(f"cell types not in the flyvis connectome: {missing}")
-        central_all = connectome.central_cells_index[:]
         self.cell_types = list(cell_types)
-        self.central_index = np.array([central_all[unique.index(t)] for t in cell_types])
-        self.layer_index = [connectome.nodes.layer_index[t][:] for t in cell_types]
+        if self.engine is None:
+            central_all = connectome.central_cells_index[:]
+            self.central_index = np.array([central_all[unique.index(t)] for t in cell_types])
+        else:
+            self.central_index = np.array([self.engine.central_index[t] for t in cell_types])
+        self.layer_index = [self.nodes_of(t) for t in cell_types]
         # torch copies for the per-frame readout in step(); one stacked (n_types,
         # n_cells) gather when all types have the same number of cells (T4/T5: 721)
         self._central_t = torch.as_tensor(self.central_index, device=self.device)
@@ -124,9 +146,23 @@ class FlyvisModel:
         self._layer_t = (torch.as_tensor(np.stack(self.layer_index), device=self.device)
                          if len(sizes) == 1 else None)
 
+    def nodes_of(self, cell_type: str) -> np.ndarray:
+        """Indices of a cell type's cells in the activity vector, one per column
+        the type occupies, in column order."""
+        if self.engine is not None:
+            return self.engine.layer_index[cell_type]
+        return self.network.connectome.nodes.layer_index[cell_type][:]
+
     @property
     def n_nodes(self) -> int:
-        return int(self.network.n_nodes)
+        return int((self.engine or self.network).n_nodes)
+
+    @property
+    def n_columns(self) -> int:
+        """Columns per eye: the length of an input frame."""
+        if self.engine is not None:
+            return len(self.engine.u)
+        return int(self.network.stimulus.n_input_elements)
 
     # --- simulation --------------------------------------------------------------
 
@@ -142,7 +178,14 @@ class FlyvisModel:
         if frames.ndim != 4:
             raise ValueError(
                 "frames must be (n_frames, 1, hexals) or (batch, n_frames, 1, hexals)")
+        self._check_columns(frames)
         return frames, t_pre
+
+    def _check_columns(self, frames: torch.Tensor) -> None:
+        if frames.shape[-1] != self.n_columns:
+            raise ValueError(f"frames have {frames.shape[-1]} columns, the network has "
+                             f"{self.n_columns}: build the eyes, the model and the LPTC "
+                             "weights on the same columns")
 
     @torch.no_grad()
     def init_state(self, batch_size: int = 1, first_frame: torch.Tensor | None = None):
@@ -162,14 +205,11 @@ class FlyvisModel:
         if self.initial_state == "none" or n == 0:
             return None
         if self.initial_state == "steady":
-            stim = self.network.stimulus
-            stim.zero(batch_size, 1)
-            stim.add_pre_stim(0.5)
-            x = stim()[:, 0].clone()  # uniform grey: the same input on every frame
-            params = self._params()
-            state = self.network._initial_state(params, batch_size)
+            grey = torch.full((batch_size, 1, 1, self.n_columns), 0.5, device=self.device)
+            x = self._stimulus(grey)[:, 0].clone()  # the same input on every frame
+            state = self._initial_state(batch_size)
             for _ in range(n):
-                state = self.network._next_state(params, state, x, self.dt)
+                state = self._next_state(state, x)
             return state
         if first_frame is None:
             raise ValueError("fade_in needs the first frame")
@@ -202,7 +242,12 @@ class FlyvisModel:
         state = self.init_state(movie.shape[0], movie[:, 0])
         time = np.arange(movie.shape[1]) * self.dt - t_pre
         if return_activity:
-            activity = self.network.simulate(movie, self.dt, initial_state=state)
+            if self.engine is None:
+                activity = self.network.simulate(movie, self.dt, initial_state=state)
+            else:
+                acts = []
+                self._integrate(movie, state, acts.append)
+                activity = torch.stack(acts, 1)
             central = activity[..., self.central_index]
             mean = self._layer_means(activity)
             return Responses(time, self.cell_types, central.cpu().numpy(),
@@ -226,6 +271,8 @@ class FlyvisModel:
         """Drop the cached parameters; call after changing network parameters
         (e.g. a perturbation that scales time constants)."""
         self._param_cache = None
+        if self.engine is not None:
+            self.engine.refresh()
 
     def _params(self):
         # flyvis's Network.forward clamps and rebuilds this namespace (a gather over
@@ -235,6 +282,33 @@ class FlyvisModel:
             self.network.clamp()
             self._param_cache = self.network._param_api()
         return self._param_cache
+
+    # The network is advanced through these four methods only, so that flyvis's
+    # network and the column network share everything else (noise, recording).
+
+    def _stimulus(self, frames: torch.Tensor) -> torch.Tensor:
+        """Input current of every node, (batch, n_frames, n_nodes)."""
+        if self.engine is not None:
+            return self.engine.stimulus(frames)
+        stim = self.network.stimulus
+        stim.zero(frames.shape[0], frames.shape[1])
+        stim.add_input(frames)
+        return stim()
+
+    def _initial_state(self, batch_size: int):
+        if self.engine is not None:
+            return self.engine.initial_state(batch_size)
+        return self.network._initial_state(self._params(), batch_size)
+
+    def _next_state(self, state, x: torch.Tensor):
+        if self.engine is not None:
+            return self.engine.next_state(state, x, self.dt)
+        return self.network._next_state(self._params(), state, x, self.dt)
+
+    @staticmethod
+    def activity_of(state) -> torch.Tensor:
+        """(batch, n_nodes) voltages of a network state."""
+        return state if torch.is_tensor(state) else state.nodes.activity
 
     @torch.no_grad()
     def step(self, frames: torch.Tensor, state):
@@ -276,21 +350,20 @@ class FlyvisModel:
 
     def _integrate(self, frames, state, readout):
         frames = torch.as_tensor(frames, dtype=torch.float32, device=self.device)
+        self._check_columns(frames)
         noise = self.noise
         if noise is not None:
             frames = noise.photoreceptors(frames)
-        params = self._params()
-        stim = self.network.stimulus
-        stim.zero(frames.shape[0], frames.shape[1])
-        stim.add_input(frames)
-        x = stim()
+        x = self._stimulus(frames)
         if state is None:
-            state = self.network._initial_state(params, frames.shape[0])
+            state = self._initial_state(frames.shape[0])
         recorder = self.recorder
         for i in range(x.shape[1]):
-            state = self.network._next_state(params, state, x[:, i], self.dt)
+            state = self._next_state(state, x[:, i])
             # T4/T5 noise is added to what is read out, not to the network state
-            act = state.nodes.activity if noise is None else noise.activity(state.nodes.activity)
+            act = self.activity_of(state)
+            if noise is not None:
+                act = noise.activity(act)
             readout(act)
             if recorder is not None:
                 recorder.record(frames[:, i, 0], act)

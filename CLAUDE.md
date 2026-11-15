@@ -22,6 +22,10 @@ changes. This file holds only the conventions for changing the code.
 - Import `flyloop` before `flyvis`: it sets `FLYVIS_ROOT_DIR` and the device.
   flyvis fixes its device when it is imported, so the device comes from
   `FLYLOOP_DEVICE` (`--device` in tasks.py), never from a later switch.
+- Build the eyes first and take the columns from them: `make_eyes(cfg.eyes)`,
+  `FlyvisModel(columns=eyes.columns)`, `LPTCWeights.from_source(source, eyes.lattice)`,
+  and `sample_spacing_deg=eyes.sample_spacing_deg` for worlds that prefilter. Never
+  assume 721 columns; ask the model (`n_columns`, `nodes_of`) or the lattice.
 - Code must run on CPU and CUDA alike: use pathlib, create tensors on the model's
   device, and call `.cpu()` before `.numpy()`.
 - Keep perturbations (noise, time-constant scaling, ablation) as hooks on the single
@@ -50,7 +54,7 @@ changes. This file holds only the conventions for changing the code.
 - Compute nodes may lack internet: download models and connectome data on a login
   node. Never run heavy compute on a login node.
 - Local data git does not carry: `data/flyvis` (`tasks.py models`), `data/connectome`
-  (`tasks.py connectome`), `runs/`.
+  (`tasks.py connectome`: the neuPrint tables and the eye map), `runs/`.
 
 ## Scope
 

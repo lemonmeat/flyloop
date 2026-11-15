@@ -23,7 +23,7 @@ import pandas as pd
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
-from flyloop.eyes import Eyes
+from flyloop.eyes import make_eyes
 from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights
 from flyloop.plotting import CATEGORICAL, GRID, INK, MUTED, SURFACE
 from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
@@ -94,14 +94,14 @@ def main(cfg: DictConfig) -> None:
     cfg = apply_sweep(cfg)
     out_dir = Path(HydraConfig.get().runtime.output_dir)
     t0 = time.time()
-    model = FlyvisModel(cfg.model.name, dt=cfg.model.dt)
+    eyes = make_eyes(cfg.eyes)
+    model = FlyvisModel(cfg.model.name, dt=cfg.model.dt, columns=eyes.columns)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
     recorder = attach_recorder(cfg, model)
-    eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
     params = LPTCParams.from_config(cfg.lptc)
     frames = []
     for source in cfg.lptc.sources:
-        w = LPTCWeights.from_source(source)
+        w = LPTCWeights.from_source(source, eyes.lattice)
         rig = VisualRig(eyes, model, LPTCLayer(w, cfg.model.dt, params))
         frames.append(tuning(rig, cfg, source).assign(source=source))
         if source == "connectome":

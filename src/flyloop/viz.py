@@ -1,8 +1,10 @@
-"""Record and show what the network sees and does: photoreceptor input and T4/T5 maps.
+"""Record and show what the network sees and does: photoreceptor input, T4/T5 maps
+and the HS/VS outputs.
 
 An `ActivityRecorder` hooks onto a `FlyvisModel` (`model.recorder`). Each frame,
 it keeps the photoreceptor input (the luminance of every column) and the voltage
-of every column of T4a-d and T5a-d. A trial starts at each network reset
+of every column of T4a-d and T5a-d. A `VisualRig` also hands it the HS/VS
+(LPTC) voltages of the same frames (`record_lptc`). A trial starts at each network reset
 (`FlyvisModel.init_state`, which `VisualRig.reset` calls), so experiments need no
 changes beyond attaching the recorder and saving it. `viz` in configs/common.yaml
 turns it on for any experiment:
@@ -12,6 +14,12 @@ turns it on for any experiment:
 `save_activity` writes, under <run>/viz/: activity.npz (the recorded arrays), one
 PNG per recorded trial (its last frame) and activity.mp4 (with the video extra).
 `scripts/view_activity.py` opens activity.npz with a time slider.
+
+The maps have the shape of the columns the model runs on: the flyvis hexagon, or
+the outline of the eye when the model is built on the eye's columns
+(`FlyvisModel(columns=...)`). The recording then carries the layout of its
+columns (`column_x`, `column_y`, `column_spacing`), so the viewer needs nothing
+but activity.npz.
 """
 
 from __future__ import annotations
@@ -21,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, to_rgb
 
 from flyloop.plotting import CATEGORICAL, INK, MUTED, SURFACE, style_axes
 from flyloop.stimuli.lattice import HexLattice
@@ -46,9 +54,9 @@ class ActivityRecorder:
 
     def __init__(self, model, trials: Sequence[int | str] | None = None,
                  batch: Sequence[int] = (0, 1), every: int = 1, max_frames: int = 1500):
-        layers = model.network.connectome.nodes.layer_index
-        self._t4t5 = torch.as_tensor(np.stack([layers[t][:] for t in T4T5]),
+        self._t4t5 = torch.as_tensor(np.stack([model.nodes_of(t) for t in T4T5]),
                                      device=model.device)
+        self.columns = model.columns  # None: the flyvis hexagon
         self.dt = model.dt
         self.trials = None if trials is None else list(trials)
         self.batch = list(batch)
@@ -60,6 +68,9 @@ class ActivityRecorder:
         self.on = False
         self._k = 0
         self.frames: list[tuple[int, float, np.ndarray, np.ndarray]] = []
+        self.lptc: list[np.ndarray | None] = []  # HS/VS of each frame (None: not given)
+        self.lptc_cells: list[str] | None = None
+        self._pending: list[tuple[int, int]] = []  # (frame index, k) awaiting HS/VS
 
     def _wanted(self, index: int, label: str) -> bool:
         if self.trials is None:
@@ -73,6 +84,7 @@ class ActivityRecorder:
         self.trial_labels.append(label)
         self.on = self._wanted(self.trial, label) and len(self.frames) < self.max_frames
         self._k = 0
+        self._pending = []
 
     @torch.no_grad()
     def record(self, frame: torch.Tensor, activity: torch.Tensor) -> None:
@@ -88,12 +100,36 @@ class ActivityRecorder:
         self.frames.append((self.trial, (k + 1) * self.dt,
                             frame[b].to(torch.float16).cpu().numpy(),
                             activity[b][:, self._t4t5].to(torch.float16).cpu().numpy()))
+        self.lptc.append(None)
+        self._pending.append((len(self.frames) - 1, k))
+
+    @torch.no_grad()
+    def record_lptc(self, v: torch.Tensor, cells: Sequence[str]) -> None:
+        """v: (batch, n_frames, n_cells) HS/VS voltages of the n_frames just
+        recorded by `record` (called by VisualRig after each step)."""
+        if self.lptc_cells is None:
+            self.lptc_cells = list(cells)
+        start = self._k - v.shape[1]
+        b = self.batch
+        for i, k in self._pending:
+            self.lptc[i] = v[b, k - start].float().cpu().numpy()
+        self._pending = []
 
     def arrays(self) -> dict[str, np.ndarray]:
         """The recording as arrays (what activity.npz holds)."""
         trial, t, pr, act = zip(*self.frames)
         names = self.batch_labels
+        layout = {}
+        if self.lptc_cells is not None:  # NaN for frames stepped without the LPTC layer
+            blank = np.full((len(self.batch), len(self.lptc_cells)), np.nan, np.float32)
+            layout = dict(lptc=np.stack([blank if v is None else v for v in self.lptc]),
+                          lptc_cells=np.array(self.lptc_cells))
+        if self.columns is not None:
+            layout |= dict(column_x=np.asarray(self.columns.x, float),
+                          column_y=np.asarray(self.columns.y, float),
+                          column_spacing=np.float64(self.columns.spacing_deg))
         return dict(
+            **layout,
             trial=np.array(trial), t=np.array(t), photoreceptors=np.stack(pr),
             t4t5=np.stack(act), cell_types=np.array(T4T5),
             trial_labels=np.array(self.trial_labels),
@@ -148,7 +184,8 @@ def save_activity(recorder: ActivityRecorder | None, out_dir: Path, cfg) -> Path
 
 class ActivityFigure:
     """One frame: per batch entry, the photoreceptor input, the population means of
-    T4/T5 over the trial so far and a map of every T4/T5 subtype.
+    T4/T5 over the trial so far, a map of every T4/T5 subtype and, if recorded,
+    the HS/VS voltages over the trial so far.
 
     Maps are drawn as the fly sees them from inside: the right eye's anterior edge
     is on its left, the left eye's on its right (front in the middle), dorsal up.
@@ -163,18 +200,22 @@ class ActivityFigure:
         pr, act = data["photoreceptors"], data["t4t5"]
         self.vmax = float(vmax) if vmax else float(np.percentile(np.abs(act), 99.5)) or 1.0
         self.means = act.astype(np.float32).mean(-1)  # (n, batch, 8)
-        lat = HexLattice(extent=_extent(pr.shape[-1]), n_sub=1)
-        self._index, self._mask, ext = _raster(lat, px_deg)
+        self._index, self._mask, ext = _raster(*column_layout(data), px_deg)
         names = [str(b) for b in data["batch_labels"]]
         nb = len(names)
-        self.fig = plt.figure(figsize=(4.8 * nb + 0.6, 4.6 / (1 - footer)), facecolor=SURFACE)
+        lptc = data.get("lptc")
+        self.has_lptc = lptc is not None
+        rows = 4 if self.has_lptc else 3
+        self._height = (4.6 + 1.5 * self.has_lptc) / (1 - footer)  # inches
+        self.fig = plt.figure(figsize=(4.8 * nb + 0.6, self._height), facecolor=SURFACE)
         outer = self.fig.add_gridspec(1, nb + 1, width_ratios=[1] * nb + [0.025], left=0.02,
-                                      right=0.95, top=1 - 0.17 * (1 - footer),
-                                      bottom=footer + 0.03, wspace=0.12)
+                                      right=0.95, top=self._top(0.83),
+                                      bottom=footer + 0.14 / self._height, wspace=0.12)
         img = dict(origin="lower", extent=ext, interpolation="nearest", aspect="equal")
-        self.images, self.lines, self.cursors = [], [], []
+        self.images, self.lines, self.cursors, self.lptc_lines = [], [], [], []
         for j, name in enumerate(names):
-            grid = outer[j].subgridspec(3, 4, wspace=0.08, hspace=0.4)
+            grid = outer[j].subgridspec(rows, 4, wspace=0.08, hspace=0.4,
+                                        height_ratios=[1, 1, 1, 1.15][:rows])
             flip = name == "right"
             ims = []
             ax = self.fig.add_subplot(grid[0, 0])
@@ -198,11 +239,14 @@ class ActivityFigure:
             ax.set_title(f"{name}{eye}: mean over columns", fontsize=8.5, color=INK, loc="left")
             self.cursors.append(ax.axvline(0, color=INK, lw=0.8))
             self.lines.append((ax, lines))
+            if self.has_lptc:
+                self._lptc_axes(self.fig.add_subplot(grid[3, :]), lptc[:, j],
+                                [str(c) for c in data["lptc_cells"]], f"{name}{eye}")
         self.fig.legend(handles=self.lines[0][1], fontsize=7, ncol=8, frameon=False,
                         loc="center right", bbox_to_anchor=(0.97, self._top(0.965)),
                         handlelength=1.8,
                         columnspacing=1.0)
-        cax = self.fig.add_subplot(outer[-1].subgridspec(3, 1)[1:, 0])
+        cax = self.fig.add_subplot(outer[-1].subgridspec(rows, 1)[1:3, 0])
         self.fig.colorbar(self.images[0][0][1], cax=cax)
         cax.tick_params(labelsize=7, colors=MUTED)
         cax.set_ylabel("T4/T5 voltage (a.u.)", fontsize=7.5, color=MUTED)
@@ -211,8 +255,31 @@ class ActivityFigure:
         self._trial = None
 
     def _top(self, y: float) -> float:
-        """Figure y of a header line placed at y in a figure without footer."""
-        return 1 - (1 - y) * (1 - self._footer)
+        """Figure y of a header line placed at y in the 4.6 inch figure without
+        footer or HS/VS row (header lines keep their distance from the top)."""
+        return 1 - (1 - y) * 4.6 / self._height
+
+    def _lptc_axes(self, ax, v: np.ndarray, cells: list[str], name: str) -> None:
+        """HS/VS traces of one batch entry: HS in orange, VS in blue, each from
+        light to dark along the cell order (HSN to HSS, VS1 to VS9)."""
+        style_axes(ax)
+        ax.yaxis.tick_right()
+        ax.tick_params(labelsize=6.5)
+        lines = []
+        for group, base in (("HS", CATEGORICAL[1]), ("VS", CATEGORICAL[0])):
+            idx = [i for i, c in enumerate(cells) if c.startswith(group)]
+            for r, i in enumerate(idx):
+                f = 0.35 * r / max(len(idx) - 1, 1)  # darken toward INK
+                color = tuple((1 - f) * a + f * b for a, b in zip(to_rgb(base), to_rgb(INK)))
+                lines.append((i, ax.plot([], [], color=color, lw=1.1, label=cells[i])[0]))
+        ax.set_ylim(*_limits(v))
+        ax.set_title(f"{name}: HS/VS voltage", fontsize=8.5, color=INK, loc="left")
+        ax.set_xlabel("time in trial (s)", fontsize=7, color=MUTED, labelpad=1)
+        ax.legend(fontsize=6, ncol=min(len(lines), 6), frameon=False, loc="upper left",
+                  bbox_to_anchor=(0, 1.0), handlelength=1.2, columnspacing=0.8,
+                  borderaxespad=0.1)
+        self.cursors.append(ax.axvline(0, color=INK, lw=0.8))
+        self.lptc_lines.append((ax, lines))
 
     def _map(self, values: np.ndarray, flip: bool) -> np.ndarray:
         m = np.where(self._mask, values.astype(np.float32)[self._index], np.nan)
@@ -227,6 +294,10 @@ class ActivityFigure:
             for j, (ax, lines) in enumerate(self.lines):
                 for k, line in enumerate(lines):
                     line.set_data(t, self.means[sel, j, k])
+                ax.set_xlim(0, max(t[-1], 1e-3))
+            for j, (ax, lines) in enumerate(self.lptc_lines):
+                for c, line in lines:
+                    line.set_data(t, d["lptc"][sel, j, c])
                 ax.set_xlim(0, max(t[-1], 1e-3))
             self._trial = trial
         for j, (ims, flip) in enumerate(self.images):
@@ -264,18 +335,20 @@ class EyeMosaic:
     left, right eye on the right, front in the middle, dorsal up.
 
     Args:
-        n_hexals: Columns per eye.
+        lattice: The columns of one eye (`eyes.lattice`: a HexLattice or the
+            eye's EyeColumns), or the number of columns of a flyvis hexagon.
         width: Width of the strip in pixels.
         px_deg: Degrees per pixel of the mosaics.
         title: Caption above the mosaics.
     """
 
-    def __init__(self, n_hexals: int, width: int = 1280, px_deg: float = 0.6,
+    def __init__(self, lattice, width: int = 1280, px_deg: float = 0.6,
                  title: str = "photoreceptor input"):
         import matplotlib.pyplot as plt
 
-        lat = HexLattice(extent=_extent(n_hexals), n_sub=1)
-        self._index, self._mask, _ = _raster(lat, px_deg)
+        if isinstance(lattice, (int, np.integer)):
+            lattice = HexLattice(extent=_extent(int(lattice)), n_sub=1)
+        self._index, self._mask, _ = _raster(lattice.x, lattice.y, lattice.spacing_deg, px_deg)
         self._index, self._mask = self._index[::-1], self._mask[::-1]  # row 0 = top
         side = self._index.shape[0]
         height = side + 48
@@ -312,17 +385,29 @@ def _extent(n_hexals: int) -> int:
     return int(round((np.sqrt(12 * n_hexals - 3) - 3) / 6))
 
 
-def _raster(lat: HexLattice, px_deg: float):
-    """Pixel -> column index of a hexagon mosaic, and the mask of the lattice."""
+def column_layout(data) -> tuple[np.ndarray, np.ndarray, float]:
+    """(x, y, spacing) of the columns of a recording: its own layout if it has
+    one (a model on the eye's columns), else the flyvis hexagon of its size."""
+    if "column_x" in data:
+        return (np.asarray(data["column_x"]), np.asarray(data["column_y"]),
+                float(data["column_spacing"]))
+    lat = HexLattice(extent=_extent(data["photoreceptors"].shape[-1]), n_sub=1)
+    return lat.x, lat.y, lat.spacing_deg
+
+
+def _raster(x: np.ndarray, y: np.ndarray, spacing: float, px_deg: float):
+    """Pixel -> column index of a mosaic of columns at (x, y), and the mask of
+    the pixels that belong to a column."""
     from scipy.spatial import cKDTree
 
-    r = np.abs(np.r_[lat.x, lat.y]).max() + lat.spacing_deg
+    r = np.abs(np.r_[x, y]).max() + spacing
     g = np.arange(-r, r + px_deg, px_deg)
     gx, gy = np.meshgrid(g, g)
-    dist, index = cKDTree(np.c_[lat.x, lat.y]).query(np.c_[gx.ravel(), gy.ravel()])
+    dist, index = cKDTree(np.c_[x, y]).query(np.c_[gx.ravel(), gy.ravel()])
     # flyvis columns are not a regular hexagonal grid in degrees (neighbours at 1
-    # and 1.12 spacings); the largest gap between columns has radius 5/8 spacing
-    mask = dist <= 0.63 * lat.spacing_deg
+    # and 1.12 spacings): the largest gap between columns has radius 5/8 spacing.
+    # The eye's columns are regular (radius 0.58 spacing).
+    mask = dist <= 0.63 * spacing
     return index.reshape(gx.shape), mask.reshape(gx.shape), (g[0], g[-1], g[0], g[-1])
 
 

@@ -1,5 +1,9 @@
 """Two compound eyes sampling the world onto flyvis hexagonal lattices.
 
+This is the simplified eye: flyvis's hexagon of 721 columns, flat and regular.
+`flyloop.eyes.OmmatidialEyes` is the eye-shaped one (the connectome's columns and
+their measured viewing directions); `make_eyes` builds either from a config.
+
 Body frame: azimuth 0 = straight ahead, positive toward the fly's left
 (counter-clockwise seen from above); elevation positive up.
 
@@ -78,6 +82,26 @@ class Eyes:
         self.azimuth = np.stack([e.azimuth for e in self.eyes])
         self.elevation = np.stack([e.elevation for e in self.eyes])
         self._directions = directions(self.azimuth, self.elevation)  # body frame
+        # the column axes, as the mean angles of each column's sub-samples
+        self.axes = directions(self.azimuth.mean(-1), self.elevation.mean(-1))
+
+    columns = None  # the network's own columns: FlyvisModel(columns=None)
+
+    @property
+    def sample_spacing_deg(self) -> float:
+        """Angular spacing of the sub-samples, for worlds that prefilter."""
+        return self.lattice.spacing_deg / self.n_sub
+
+    def motion_basis(self) -> tuple[np.ndarray, np.ndarray]:
+        """Preferred directions of T4a/T5a (front to back) and T4c/T5c (upward) in
+        each column's visual field: two (2, n_hexals, 3) arrays of unit vectors.
+        On this eye they are taken along lines of azimuth and elevation."""
+        az, el = np.radians(self.azimuth.mean(-1)), np.radians(self.elevation.mean(-1))
+        e_az = np.stack([-np.sin(az), np.cos(az), np.zeros_like(az)], -1)
+        e_el = np.stack([-np.sin(el) * np.cos(az), -np.sin(el) * np.sin(az), np.cos(el)], -1)
+        # front to back is toward +azimuth on the left eye, -azimuth on the right
+        side = np.array([1.0 if e == "left" else -1.0 for e in EYE_ORDER])[:, None, None]
+        return side * e_az, e_el
 
     def sample(self, world, heading_deg: float = 0.0, orientation: np.ndarray | None = None,
                position: np.ndarray | None = None) -> np.ndarray:
@@ -109,3 +133,20 @@ class Eyes:
             else:
                 lum = world.luminance(*angles(d))
         return lum.mean(-1)[:, None, :].astype(np.float32)
+
+
+def make_eyes(cfg):
+    """The eyes an experiment config asks for (its `eyes` section).
+
+    model: "hexagon" builds `Eyes` from axis_azimuth_deg and n_sub; "ommatidia"
+    builds `OmmatidialEyes` from acceptance_angle_deg and sample_spacing_deg.
+    A section without `model` is the hexagon.
+    """
+    model = cfg.get("model") or "hexagon"
+    if model == "hexagon":
+        return Eyes(cfg.axis_azimuth_deg, n_sub=cfg.n_sub)
+    if model == "ommatidia":
+        from .ommatidia import OmmatidialEyes
+
+        return OmmatidialEyes(cfg.acceptance_angle_deg, cfg.sample_spacing_deg)
+    raise ValueError(f"unknown eyes.model {model!r}; use hexagon or ommatidia")

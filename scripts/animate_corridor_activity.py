@@ -1,4 +1,4 @@
-"""One video of a corridor trial: the fly from above, and what its eyes and T4/T5 do.
+"""One corridor trial on video: the fly from above, its eyes, T4/T5 and HS/VS.
 
 Needs a corridor run made with the activity viewer on, so that the trial was
 recorded (no flyvis simulation is repeated), and the video extra:

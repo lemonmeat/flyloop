@@ -1,6 +1,9 @@
-"""Compound-eye sampling of rendered scenes onto the flyvis hexagonal lattice
-(721 columns per eye), for two mirror-symmetric eyes."""
+"""Compound-eye sampling of rendered scenes, for two mirror-symmetric eyes: the
+flyvis hexagon (`Eyes`, 721 columns) or the eye of the connectome
+(`OmmatidialEyes`, 892 columns with measured viewing directions)."""
 
-from .compound_eye import EYE_ORDER, CompoundEye, Eyes
+from .compound_eye import EYE_ORDER, CompoundEye, Eyes, make_eyes
+from .ommatidia import ACCEPTANCE_ANGLE_DEG, OmmatidialEyes
 
-__all__ = ["EYE_ORDER", "CompoundEye", "Eyes"]
+__all__ = ["ACCEPTANCE_ANGLE_DEG", "EYE_ORDER", "CompoundEye", "Eyes", "OmmatidialEyes",
+           "make_eyes"]

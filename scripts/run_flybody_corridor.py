@@ -44,7 +44,7 @@ from flyloop.control import (
     calibrate_decoder,
     calibration_settings,
 )
-from flyloop.eyes import Eyes
+from flyloop.eyes import make_eyes
 from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights
 from flyloop.plotting import CATEGORICAL, GRID, INK, MUTED, SURFACE, style_axes
 from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
@@ -102,15 +102,16 @@ def main(cfg: DictConfig) -> None:
     cfg = apply_sweep(cfg)
     out_dir = Path(HydraConfig.get().runtime.output_dir)
     t0 = time.time()
-    model = FlyvisModel(cfg.model, dt=cfg.dt)
+    eyes = make_eyes(cfg.eyes)
+    model = FlyvisModel(cfg.model, dt=cfg.dt, columns=eyes.columns)
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
     recorder = attach_recorder(cfg, model)
-    eyes = Eyes(cfg.eyes.axis_azimuth_deg, n_sub=cfg.eyes.n_sub)
-    w = LPTCWeights.from_source(cfg.lptc.source)
+    w = LPTCWeights.from_source(cfg.lptc.source, eyes.lattice)
     rig = VisualRig(eyes, model, LPTCLayer(w, cfg.dt, LPTCParams.from_config(cfg.lptc)))
     c = cfg.corridor
     corridor = Corridor(length=c.length, pattern=c.pattern, square=c.square, alpha=c.alpha,
-                        contrast=c.contrast, seed=c.seed)
+                        contrast=c.contrast, sample_spacing_deg=eyes.sample_spacing_deg,
+                        seed=c.seed)
     limit = 0.5 - cfg.collision_margin
 
     decoder = RotationDecoder(w, eyes)
@@ -155,7 +156,7 @@ def main(cfg: DictConfig) -> None:
                        tau_att_s=f.tau_att_s, texture_dir=out_dir / "textures",
                        average_pose=f.average_pose, seed=cfg.seed)
     if f.vision == "mujoco":
-        world = body.vision_world(face_px=f.face_px, sample_spacing_deg=5.8 / cfg.eyes.n_sub)
+        world = body.vision_world(face_px=f.face_px, sample_spacing_deg=eyes.sample_spacing_deg)
     elif f.vision == "analytic":
         world = corridor
     else:

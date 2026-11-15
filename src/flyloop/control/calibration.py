@@ -25,10 +25,22 @@ from .readout import LinearReadout
 CORRIDOR_KEYS = ("pattern", "square", "alpha", "contrast", "length")
 
 
+EYE_KEYS = {"hexagon": ("axis_azimuth_deg", "n_sub"),
+            "ommatidia": ("model", "acceptance_angle_deg", "sample_spacing_deg")}
+
+
+def eye_settings(eyes: dict) -> dict:
+    """The settings the chosen eye model reads (`flyloop.eyes.make_eyes`). The
+    hexagon's are written as before `eyes.model` existed, so calibrations saved
+    then still fit it."""
+    return {k: eyes[k] for k in EYE_KEYS[eyes.get("model") or "hexagon"]}
+
+
 def calibration_settings(cfg) -> dict:
     """The parts of an experiment config a corridor calibration depends on."""
     plain = OmegaConf.to_container(cfg, resolve=True) if OmegaConf.is_config(cfg) else dict(cfg)
-    return {"model": plain["model"], "dt": float(plain["dt"]), "eyes": plain["eyes"],
+    return {"model": plain["model"], "dt": float(plain["dt"]),
+            "eyes": eye_settings(plain["eyes"]),
             "lptc": plain["lptc"], "speed": float(plain["speed"]),
             "corridor": {k: plain["corridor"][k] for k in CORRIDOR_KEYS}}
 

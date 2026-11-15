@@ -50,8 +50,22 @@ def test_settings_ignore_what_a_calibration_does_not_depend_on():
     assert calibration_settings(other) == calibration_settings(CFG)
 
 
+def test_settings_keep_what_the_chosen_eyes_read():
+    both = {"acceptance_angle_deg": 7.7, "sample_spacing_deg": 2.0, **CFG["eyes"]}
+    hexagon = {**CFG, "eyes": {"model": "hexagon", **both}}
+    assert calibration_settings(hexagon) == calibration_settings(CFG)  # as saved before
+    eye = calibration_settings({**CFG, "eyes": {"model": "ommatidia", **both}})
+    assert eye["eyes"] == {"model": "ommatidia", "acceptance_angle_deg": 7.7,
+                           "sample_spacing_deg": 2.0}
+    assert eye == calibration_settings({**CFG, "eyes": {"model": "ommatidia", **both,
+                                                        "n_sub": 5}})
+
+
 def test_calibration_made_under_other_settings_is_refused(tmp_path):
     cal, _ = _fitted()
+    with pytest.raises(ValueError, match="eyes"):
+        cal.check(calibration_settings({**CFG, "eyes": {
+            "model": "ommatidia", "acceptance_angle_deg": 7.7, "sample_spacing_deg": 2.0}}))
     with pytest.raises(ValueError, match="speed"):
         cal.check(calibration_settings({**CFG, "speed": 1.0}))
     with pytest.raises(ValueError, match="different set of LPTC cells"):

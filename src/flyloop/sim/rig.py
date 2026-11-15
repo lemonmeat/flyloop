@@ -69,4 +69,6 @@ class VisualRig:
         """Advance by frames (2, n_frames, 1, n_hexals) already rendered."""
         cols, self.state["vision"] = self.model.step_columns(frames, self.state["vision"])
         v, self.state["lptc"] = self.lptc.step(cols, self.state["lptc"])
+        if self.model.recorder is not None:
+            self.model.recorder.record_lptc(v, self.lptc.cells)
         return RigOutput(lptc=v.cpu().numpy(), t4t5_mean=cols.mean(-1).cpu().numpy())

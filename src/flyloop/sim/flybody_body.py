@@ -290,7 +290,7 @@ class Replay:
         self.mosaic = None
         if eyes is not None:
             from flyloop.viz import EyeMosaic
-            self.mosaic = EyeMosaic(eyes.lattice.n_hexals, 2 * width, title=eye_title)
+            self.mosaic = EyeMosaic(eyes.lattice, 2 * width, title=eye_title)
 
     def _cam(self, lookat, distance, azimuth, elevation):
         cam = mujoco.MjvCamera()

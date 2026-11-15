@@ -13,10 +13,6 @@ sweep: flybody_corridor
 model: flow/0000/000
 dt: 0.01
 
-eyes:
-  axis_azimuth_deg: 80.0
-  n_sub: 3
-
 lptc:
   source: connectome
   preset: simple       # LPTC/LPi time constants: simple (10 ms) or literature (3 ms)

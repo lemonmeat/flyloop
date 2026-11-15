@@ -1,11 +1,13 @@
 # flyloop
 
 A closed-loop virtual fly whose steering comes only from a connectome-constrained
-visual system. The fly sees a rendered world through two compound eyes. Its motion
-vision is the pretrained [flyvis](https://github.com/TuragaLab/flyvis) network
-(Lappalainen et al., 2024). Its lobula plate tangential cells (HS and VS) are built
-here from synapse counts in the Janelia male optic lobe connectome. Their output
-steers the body, and the body's new pose determines the next image.
+visual system. The fly sees a rendered world through two compound eyes that have
+the columns of the Janelia male optic lobe connectome, each looking where the
+ommatidium of its place in a real eye looks. Its motion vision is the pretrained
+[flyvis](https://github.com/TuragaLab/flyvis) network (Lappalainen et al., 2024),
+laid out on those columns. Its lobula plate tangential cells (HS and VS) are built
+here from the synapse counts of the same connectome. Their output steers the body,
+and the body's new pose determines the next image.
 
 The aim is to perturb this visual system (resolution, noise, time constants, cell
 types) and measure what closed-loop behaviour actually needs from it, scoring each
@@ -13,8 +15,10 @@ condition both open loop (direction selectivity) and closed loop (behaviour).
 
 ```
 world: drum, sphere or corridor; 1/f^alpha textures, gratings, checkerboards
-  -> two compound eyes, each a 721-column flyvis hexagonal lattice
-  -> flyvis (pretrained; both eyes as one batch) -> T4a-d (ON) and T5a-d (OFF)
+  -> two compound eyes: the 892 columns of optic-lobe:v1.1, measured viewing
+     directions, Gaussian photoreceptor optics (or flyvis's 721-column hexagon)
+  -> flyvis on those columns (pretrained constants; both eyes as one batch)
+     -> T4a-d (ON) and T5a-d (OFF)
   -> LPTC layer: HS and VS cells from optic-lobe:v1.1 synapse counts, LPi inhibition
   -> decoder (HS -> yaw, VS -> roll and pitch) -> controller -> steering command
   -> body (kinematic; flybody/MuJoCo prototype) -> new pose -> render the world again
@@ -39,7 +43,8 @@ The connectome-derived weights are tested against independent anatomy. HS cells
 get over 95% of their T4/T5 input from front-to-back T4a/T5a, and VS cells over 40%
 from downward T4d/T5d. HSN, HSE and HSS come out dorsal, equatorial and ventral,
 although the column alignment never uses HS cells. The LPi cells kept are
-predicted inhibitory.
+predicted inhibitory. The eye is tested the same way (see
+[From photoreceptor to HS/VS](#from-photoreceptor-to-hsvs)).
 
 ## Setup
 
@@ -51,7 +56,7 @@ same on macOS, Windows and Linux.
 git clone https://github.com/lemonmeat/flyloop.git
 cd flyloop
 python tasks.py env     # .venv with Python 3.10, flyloop installed, pretrained models
-python tasks.py test    # the full suite takes about a minute on a GPU
+python tasks.py test    # the full suite takes about two minutes on a GPU
 ```
 
 `env` installs [uv](https://docs.astral.sh/uv/) if it is missing, creates `.venv`
@@ -64,18 +69,23 @@ Windows wheels are CPU-only. Optional extras: `--extras video` (MP4/GIF output) 
 
 ### Connectome data
 
-The HS/VS weights come from the Janelia male optic lobe (neuPrint dataset
-`optic-lobe:v1.1`, CC-BY 4.0) and are cached once per machine in `data/connectome`.
-Copy `.env.example` to `.env` (gitignored) and add your token from
-neuprint.janelia.org > Account. Then run:
+Two data sets are cached once per machine in `data/connectome`:
+
+- The columns and the HS/VS weights come from the Janelia male optic lobe (neuPrint
+  dataset `optic-lobe:v1.1`, CC-BY 4.0). Copy `.env.example` to `.env` (gitignored)
+  and add your token from neuprint.janelia.org > Account.
+- The viewing directions of the ommatidia come from the micro-CT eye map of Zhao et
+  al. (2025), downloaded from [reiserlab/eyemap_T4](https://github.com/reiserlab/eyemap_T4)
+  (GPL-3.0) at a fixed commit. It needs no account.
 
 ```bash
 python tasks.py connectome
 ```
 
 Without the cache, the tests that need it are skipped, and experiments can run on
-simple pooled weights instead: `lptc.source=simple` (`closedloop`, `corridor`,
-`flybody_corridor`) or `"lptc.sources=[simple]"` (`drum_openloop`, `vs_tuning`).
+the flyvis hexagon with simple pooled weights instead: `eyes.model=hexagon` with
+`lptc.source=simple` (`closedloop`, `corridor`, `flybody_corridor`) or
+`"lptc.sources=[simple]"` (`drum_openloop`, `vs_tuning`).
 
 ### Devices
 
@@ -105,6 +115,7 @@ python tasks.py run                                   # list the scripts
 python tasks.py run openloop_tuning
 python tasks.py run closedloop "models=[flow/0000/000]" t_run=2.0
 python tasks.py run corridor corridor.pattern=texture speed=1.0
+python tasks.py run corridor eyes.model=hexagon       # the simplified eye (see below)
 python tasks.py run noise index=3                     # entry 3 of the noise sweep
 python tasks.py run summarize_noise                   # table and figures over runs/noise
 python tasks.py run animate_corridor runs/corridor/0_0    # MP4 of a run (--extras video)
@@ -114,7 +125,14 @@ python tasks.py run animate_corridor runs/corridor/0_0    # MP4 of a run (--extr
 experiments, every argument after the name is a Hydra override of
 `configs/<name>.yaml`. Quote overrides that contain brackets, as above, because zsh
 (the macOS default shell) would otherwise treat them as file patterns. On a CUDA
-GPU, `closedloop` takes a few minutes and `corridor` about five.
+GPU, `closedloop` takes a few minutes and `corridor` about seven.
+
+The eyes are set in the `eyes` section of `configs/common.yaml`. `eyes.model=ommatidia`
+(the default) is the eye of the connectome, and `eyes.model=hexagon` is flyvis's
+flat lattice of 721 columns, the simplified eye that earlier results used. Both
+run through the same pipeline. `noise` scores direction selectivity with moving
+edges drawn on the flyvis lattice, so it stays on the hexagon, as does
+`openloop_tuning`.
 
 Every run writes `runs/<sweep>/<index>_<seed>/`:
 
@@ -127,10 +145,10 @@ Raw traces are saved only when a config flag asks for them (`save_raw=true` in
 
 ### Activity viewer
 
-Any experiment can record what the eyes see and what T4/T5 do, so you can check
-the effect of a parameter change frame by frame. With `viz.enabled=true`, every
-frame's photoreceptor input and the voltage of every column of T4a-d and T5a-d are
-recorded. Each network reset starts a new trial; for example, each drum velocity is
+Any experiment can record what the eyes see and what T4/T5 and HS/VS do, so you can
+check the effect of a parameter change frame by frame. With `viz.enabled=true`, every
+frame's photoreceptor input, the voltage of every column of T4a-d and T5a-d and, in
+experiments that step a `VisualRig`, the HS/VS voltages are recorded. Each network reset starts a new trial; for example, each drum velocity is
 one trial in `drum_openloop`. The run then writes `viz/` with:
 
 - `activity.npz`: the recorded arrays
@@ -147,7 +165,10 @@ python tasks.py run view_activity runs/drum_openloop/0_0 runs/drum_openloop/1_0 
 `connectome 90 deg/s` or `torque: intact yaw` are listed in `activity.npz`). Recording
 stops after `viz.max_frames` frames, and `viz.every` thins the frames. The settings
 are in `configs/common.yaml`. Each eye's maps are drawn as the fly sees them, with
-the front in the middle of the figure and dorsal up. For `openloop_tuning`, the
+the front in the middle of the figure and dorsal up. They have the shape of the
+columns the run used: the outline of the eye's ommatidial lattice, one hexagon per
+column, or the flyvis hexagon. The recording carries its own layout, so runs of
+either kind open in the viewer. For `openloop_tuning`, the
 panels are stimuli: `viz.batch` picks them, in the order ON then OFF, each over
 `directions_deg`. To compare runs, give `view_activity` several runs: one slider
 moves them all to the same frame, and `--vmax` sets the same colour scale for each.
@@ -169,7 +190,7 @@ Settings shared by all experiments (output folder, index, seed) are in
 | `flybody_corridor` | `timeseries.csv`, `flybody_corridor.png`, `flybody_corridor.mp4` (chase and top views; below, what both eyes see) |
 | `benchmark_speed` | `benchmark.json`, `benchmark.txt`: wall-clock time per simulated second of flyvis |
 | `animate_corridor` | `corridor_animation.mp4` (or `.gif`) from a finished `corridor` run |
-| `animate_corridor_activity` | `viz/corridor_activity_trial<k>.mp4`: a recorded corridor trial from above, with its photoreceptor and T4/T5 maps |
+| `animate_corridor_activity` | `viz/corridor_activity_trial<k>.mp4`: a recorded corridor trial from above, with its photoreceptor and T4/T5 maps and HS/VS traces |
 | `summarize_model_selection` | `selection.csv`: pretrained models ranked by T4/T5 tuning |
 | `view_activity` | Time slider over `viz/activity.npz` of one or more runs; `--movie` re-renders `activity.mp4` |
 | any experiment with `viz.enabled=true` | `viz/activity.npz`, `viz/trial_<k>.png`, `viz/activity.mp4` |
@@ -189,6 +210,13 @@ configs). Each stage is a replaceable part:
   uses MuJoCo's OpenGL renderer (the GPU where there is one; set `MUJOCO_GL=egl`
   or `osmesa` on a headless node). `tests/test_mujoco_world.py` checks it against
   `Corridor`: the photoreceptor input and the HS/VS responses agree.
+- **Eyes** (`flyloop.eyes.make_eyes`) turn a world into one luminance per column
+  and eye. `OmmatidialEyes` reads the world along about 12,600 directions spread
+  evenly over both fields of view, by casting rays (`Corridor`) or by looking up
+  the rendered cube map (`MujocoWorld`), and gives each column the mean under its
+  photoreceptors' angular sensitivity. `Eyes` is the flyvis hexagon.
+  `tests/test_mujoco_world.py` checks both renderings against each other through
+  either eye.
 - **`VisualRig`** steps the two eyes through flyvis and the LPTC layer.
 - **Decoders** turn HS/VS voltages into estimates. `RotationDecoder` uses templates
   from anatomy, calibrated in deg/s; `LinearReadout` is fitted by regression.
@@ -208,13 +236,64 @@ the `noise` experiment is always noise-free). The LPTC time constants come from 
 (`lptc.preset=simple`, 10 ms placeholder values, or `literature`, 3 ms from blowfly
 membrane properties; see `src/flyloop/lptc/model.py`).
 
+### From photoreceptor to HS/VS
+
+With `eyes.model=ommatidia`, every stage between the world and the HS/VS cells
+takes its structure from data. Nothing is fitted to behaviour.
+
+| Stage | What the model uses | Source |
+| --- | --- | --- |
+| Columns | The 892 medulla columns of the right optic lobe, by their labels (hex1, hex2) | optic-lobe:v1.1 (Nern et al. 2025) |
+| Viewing directions | Lens-to-photoreceptor axis of each ommatidium of a right eye, from micro-CT. 843 columns have a measured direction; the 49 columns this eye lacks, mostly at the anterior rim, continue the measured lattice | Zhao et al. 2025 |
+| Registration | Column (hex1, hex2) is ommatidium (p, q) = (hex2 - 19, hex1 - 18): both grids put their origin on the equator and the central meridian. No parameter is fitted | Nern et al. 2025, Zhao et al. 2025 |
+| Optics | Gaussian angular sensitivity, acceptance angle (full width at half maximum) 7.7 deg | Light-adapted R1-6, Juusola et al. 2017 |
+| Photoreceptors to T4/T5 | The 65 cell types and 2,355 connections (cell types and column offset) of flyvis, with its learned resting potentials, time constants and synaptic scalings, repeated on every column: 56,498 cells and 1,880,992 connections per eye | flyvis 1.2.0 (FIB-25 connectome, Lappalainen et al. 2024) |
+| T4/T5 to HS/VS, LPi | Synapse counts of every T4/T5 cell, placed in the column of its dendrites: all 6,793 T4/T5 cells and all 123,822 of their synapses onto HS and VS | optic-lobe:v1.1 |
+| HS/VS membrane | Time-constant presets (see above) | Borst and Haag 1996 |
+
+- **The same network on more columns.** Every flyvis parameter is shared across
+  columns, so the network is a convolution on the hexagonal lattice and extends
+  to any set of columns (`flyloop.vision.column_network`). A connection exists
+  wherever both of its cells do, which is flyvis's own rule at the rim of its
+  hexagon. On flyvis's 721 columns the result equals flyvis to within rounding
+  (`tests/test_column_network.py`).
+- **What the hexagon left out.** The flyvis hexagon holds 721 of the 892 columns.
+  With it, 15% of the T4/T5 cells and 11% of their synapses onto HS and VS had no
+  column and were dropped.
+- **Two independent sources agree on the axes.** The lattice orientation comes from
+  the wiring of T4 and T5 (`flyloop.connectome.columns`): on it, T4b's preferred
+  direction is +x and T4c's is +y. The micro-CT directions, which that fit never
+  sees, put +x anterior and +y dorsal, as back-to-front and upward motion require
+  (`tests/test_eyemap.py`).
+- **The lattice is not a grid of azimuth and elevation.** It is sheared and bent
+  across the eye, and T4/T5 preferred directions follow it (Zhao et al. 2025). The
+  rotation decoder's matched filters therefore use the lattice axes of each column
+  (`OmmatidialEyes.motion_basis`).
+
+Limits:
+
+- The eye map and the connectome come from different flies, so a column's direction
+  is good to about one ommatidium (about 5 deg). Zhao et al. map their scan to their
+  EM volume the same way.
+- The medulla circuit is flyvis's, from the FIB-25 connectome with learned
+  parameters, not the circuit of optic-lobe:v1.1. flyvis was trained on a regular
+  lattice whose columns do not overlap; on the eye, neighbouring columns are 3.5 to
+  7 deg apart (5th to 95th percentile, median 4.8) and their photoreceptors overlap.
+- The left eye is the mirror image of the right, since the connectome holds one
+  optic lobe. Both eyes see the world from one point, and the eye's equator is
+  level when the body is.
+- VS cells are numbered front to back by their input, not by anatomical identity.
+
 ```
 src/flyloop/
   stimuli/      gratings, moving edges, rotating drums, 1/f^alpha textures, hex lattice
-  eyes/         two compound eyes: world -> flyvis hex lattice at the body's pose
-  vision/       pretrained flyvis wrapper returning T4/T5 time series
+  eyes/         two compound eyes: the connectome's columns with measured directions
+                and optics (ommatidia.py), or the flyvis hexagon (compound_eye.py)
+  vision/       pretrained flyvis wrapper returning T4/T5 time series; the flyvis
+                network on any set of columns (column_network.py)
   lptc/         HS/VS rate model with LPi inhibition; connectome or simple weights
-  connectome/   neuPrint optic-lobe:v1.1 loaders, alignment of its columns to flyvis
+  connectome/   neuPrint optic-lobe:v1.1 loaders, alignment of its columns to flyvis,
+                the eye's columns and their viewing directions (eyemap.py)
   control/      rotation decoder, fitted readout, PD / corridor / efference / saccadic controllers
   sim/          worlds, visual rig, bodies, closed loop
   perturb/      T4/T5 silencing, noise at photoreceptors, T4/T5 or HS/VS
@@ -304,11 +383,16 @@ RL is out of scope (flight imitation alone took about 10^8 simulation steps).
 - flyvis pretrained ensemble: 50 models, 64 cell types, 45,669 neurons, 734 learned
   parameters, trained on Sintel optic flow. `flow/0000/000` is the best ranked.
 - Janelia male optic lobe, neuPrint `optic-lobe:v1.1` (CC-BY 4.0).
+- Micro-CT eye map of Zhao et al. (2025): [reiserlab/eyemap_T4](https://github.com/reiserlab/eyemap_T4)
+  (GPL-3.0), scan 20240701, right eye, 852 ommatidia.
 
 Papers:
 
 - Lappalainen et al., Nature 2024: flyvis
 - Nern et al., Nature 2025: male optic lobe connectome
+- Zhao et al., Nature 2025: eye structure shapes neuron function in motion vision (eye map)
+- Juusola et al., eLife 2017: photoreceptor acceptance angles in Drosophila
+- Gonzalez-Bellido, Wardill and Juusola, PNAS 2011: acceptance and interommatidial angles
 - Matsliah et al., Nature 2024: FlyWire optic lobe
 - Borst, Haag and Mauss, J Comp Physiol A 2020: how fly neurons compute the direction of motion
 - Borst and Haag, J Comput Neurosci 1996: passive properties of tangential cells

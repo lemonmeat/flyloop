@@ -12,7 +12,7 @@ def test_mosaic_covers_every_column_without_gaps():
 
     assert _extent(721) == 15
     lat = HexLattice(n_sub=1)
-    index, mask, ext = _raster(lat, px_deg=1.0)
+    index, mask, ext = _raster(lat.x, lat.y, lat.spacing_deg, px_deg=1.0)
     assert set(np.unique(index[mask])) == set(range(lat.n_hexals))
     # no holes: every pixel inside the hull of the column centres is drawn
     gx, gy = np.meshgrid(np.linspace(ext[0], ext[1], mask.shape[1]),
@@ -38,10 +38,12 @@ def test_recorder_keeps_selected_trials_and_writes_viewer(tmp_path):
     for omega in (0, 90):
         drum = Drum.grating(30.0)
         name_trial(model, f"{omega} deg/s")
-        rig.reset(drum, t_settle=0.1)
+        settle = rig.reset(drum, t_settle=0.1).lptc
+        steps = []
         for _ in range(10):
             drum.rotate(omega, rig.dt)
-            rig.step(drum)
+            steps.append(rig.step(drum).lptc[:, 0])
+    hsvs = np.concatenate([settle, np.stack(steps, 1)], 1)  # (2, 20, cells) of trial 1
     model.recorder = None
 
     data = recorder.arrays()
@@ -49,6 +51,9 @@ def test_recorder_keeps_selected_trials_and_writes_viewer(tmp_path):
     assert (data["trial"] == 1).all() and len(data["t"]) == 10  # 20 frames, every 2nd
     assert data["photoreceptors"].shape == (10, 2, 721)
     assert data["t4t5"].shape == (10, 2, 8, 721)
+    # HS/VS of the same frames, from the LPTC layer the rig stepped
+    assert data["lptc"].shape == (10, 2, 2) and list(data["lptc_cells"]) == ["HS", "VS"]
+    np.testing.assert_allclose(data["lptc"], hsvs[:, ::2].transpose(1, 0, 2), rtol=1e-6)
     assert list(data["batch_labels"]) == ["left", "right"]
     d = save_activity(recorder, tmp_path, cfg)
     assert (d / "activity.npz").is_file() and (d / "trial_1.png").is_file()

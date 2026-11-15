@@ -12,10 +12,6 @@ model:
   name: flow/0000/000
   dt: 0.01             # tuning at 10 ms matches 5 ms (model_selection 10_0)
 
-eyes:
-  axis_azimuth_deg: 80.0
-  n_sub: 3
-
 lptc:
   sources: [connectome, simple]
   preset: simple       # LPTC/LPi time constants: simple (10 ms) or literature (3 ms)

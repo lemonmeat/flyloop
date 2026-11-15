@@ -120,3 +120,60 @@ def test_lptc_responses_match_the_analytic_corridor(world_of):
     a, b = traces
     assert np.corrcoef(a.ravel(), b.ravel())[0, 1] > 0.98
     assert np.abs(a - b).max() < 0.2 * np.ptp(a)
+
+
+# --- the eye-shaped eyes (need the connectome cache: python tasks.py connectome) ---
+
+@pytest.fixture(scope="module")
+def ommatidial_eyes():
+    from flyloop.eyes import OmmatidialEyes
+
+    try:
+        return OmmatidialEyes()
+    except FileNotFoundError as e:
+        pytest.skip(str(e))
+
+
+@pytest.mark.parametrize("pattern", ["checker", "texture"])
+def test_ommatidial_eye_input_matches_the_analytic_corridor(world_of, ommatidial_eyes, pattern):
+    """The projection of the rendered cube map onto the ommatidia against the
+    rays cast from them, both prefiltered for the spacing of the eye's samples."""
+    eyes = ommatidial_eyes
+    c = Corridor(length=8.0, pattern=pattern, seed=1,
+                 sample_spacing_deg=eyes.sample_spacing_deg)
+    w = world_of(c, sample_spacing_deg=eyes.sample_spacing_deg)
+    for p, R in _poses(8):
+        a = eyes.sample(c, orientation=R, position=p)
+        b = eyes.sample(w, orientation=R, position=p)
+        assert b.shape == a.shape == (2, 1, eyes.columns.n_hexals)
+        assert np.corrcoef(a.ravel(), b.ravel())[0, 1] > 0.995
+        assert abs((b - a).mean()) < 0.005  # no brightness offset
+        assert np.abs(b - a).mean() < 0.08 * a.std()
+
+
+@pytest.mark.flyvis
+def test_lptc_responses_match_the_analytic_corridor_on_the_eye(world_of, ommatidial_eyes):
+    """As test_lptc_responses_match_the_analytic_corridor, through the eye's
+    columns, the network on them and the connectome's HS/VS weights."""
+    from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights
+    from flyloop.sim import VisualRig
+    from flyloop.vision import FlyvisModel
+
+    dt = 0.01
+    eyes = ommatidial_eyes
+    c = Corridor(length=8.0, seed=1, sample_spacing_deg=eyes.sample_spacing_deg)
+    model = FlyvisModel("flow/0000/000", dt=dt, columns=eyes.columns)
+    weights = LPTCWeights.from_connectome(eyes.lattice)
+    traces = []
+    for world in (c, world_of(c, sample_spacing_deg=eyes.sample_spacing_deg)):
+        rig = VisualRig(eyes, model, LPTCLayer(weights, dt, LPTCParams()))
+        rig.reset(world, t_settle=0.3, position=np.array([0.0, 0.1, 0.0]))
+        v = []
+        for i in range(40):  # forward at 0.5 widths/s while yawing at 100 deg/s
+            R = rotation_matrix([0, 0, 1.0], 100.0 * i * dt)
+            p = np.array([0.5 * i * dt, 0.1, 0.0])
+            v.append(rig.step(world, orientation=R, position=p).lptc[:, -1])
+        traces.append(np.array(v))
+    a, b = traces
+    assert np.corrcoef(a.ravel(), b.ravel())[0, 1] > 0.98
+    assert np.abs(a - b).max() < 0.2 * np.ptp(a)
