@@ -213,7 +213,10 @@ def main(cfg: DictConfig) -> None:
     save_activity(recorder, out_dir, cfg)
     metrics = pd.concat(all_metrics, ignore_index=True)
     summary = pd.concat(summaries, ignore_index=True)
-    if cfg.analysis.compare_flyvis:
+    if cfg.analysis.compare_flyvis and model.view is None:
+        print("analysis.compare_flyvis skipped: flyvis's analysis only knows its pretrained "
+              "models, not an extension")
+    elif cfg.analysis.compare_flyvis:
         ref = flyvis_reference(model, cfg)
         ref.to_csv(out_dir / "flyvis_reference.csv", index=False)
         ref_exp = ref[ref.polarity == ref.cell_type.str[:2].map(EXPECTED_POLARITY)]

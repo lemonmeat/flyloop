@@ -49,7 +49,11 @@ def test_make_eyes_ommatidia(eyes):
     cfg = OmegaConf.create({"model": "ommatidia", "acceptance_angle_deg": 5.0,
                             "sample_spacing_deg": 3.0, "axis_azimuth_deg": 80.0, "n_sub": 3})
     made = make_eyes(cfg)
-    assert isinstance(made, OmmatidialEyes) and made.columns is eyes.columns
+    assert isinstance(made, OmmatidialEyes)
+    np.testing.assert_array_equal(made.columns.hex1, eyes.columns.hex1)
+    assert made.superposition and made.columns.placement is not None
+    flat = make_eyes(OmegaConf.merge(cfg, {"superposition": False}))
+    assert not flat.superposition and flat.columns.placement is None
     assert (made.acceptance_angle_deg, made.sample_spacing_deg) == (5.0, 3.0)
 
 

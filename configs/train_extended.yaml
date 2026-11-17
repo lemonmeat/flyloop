@@ -1,0 +1,26 @@
+# Train the parameters of the cell types flyvis lacks (flyloop.connectome.extension)
+# on flyvis's optic-flow task, with everything pretrained held fixed.
+# Run: python tasks.py run train_extended [key=value ...]
+
+defaults:
+  - common
+  - _self_
+
+sweep: train_extended
+
+pretrained: flow/0000/000  # the flyvis model the extension builds on
+connectome: null           # extended connectome file; null = the one `tasks.py connectome` writes
+
+n_iters: 20000             # training iterations (batches of 4 Sintel sequences)
+val_every: 1000            # validation (and keeping the best) every this many iterations
+lr: 5.0e-05                # Adam learning rate at the start: flyvis's lr_net.start
+lr_stop: 5.0e-06           # ... and at the end: flyvis's lr_net.stop
+lr_steps: 10               # flyvis's stepwise schedule
+
+activity_penalty:          # flyvis's penalizer, on the new types' resting potentials
+  weight: 0.1              # activity_penalty
+  baseline: 5.0            # activity_baseline
+  below_weight: 1.0        # below_baseline_penalty_weight
+  above_weight: 0.1        # above_baseline_penalty_weight
+  stop_iter: 12000         # flyvis stops it at 150k of 250k iterations (60%)
+  lr_scale: 1.0            # its learning rate over flyvis's (lr); 1 = flyvis

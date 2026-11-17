@@ -15,9 +15,14 @@
   mean +- SD of 6 cells; dark-adapted cells are wider, 9.47 +- 1.57 deg there
   and 8.23 +- 0.54 deg in Gonzalez-Bellido et al. 2011, PNAS 108:4224). It is
   wider than the spacing of the ommatidia (4 to 5 deg near the centre of the
-  eye), so neighbours overlap. A column stands for one optical axis: by neural
-  superposition its R1-6 inputs come from six neighbouring ommatidia that look
-  the same way, and R7 and R8 sit under its own lens.
+  eye), so neighbours overlap.
+- Neural superposition (`superposition=True`, the default): a column stands for
+  one optical axis, seen by the R7 and R8 under its own lens and by the R1-R6 of
+  neighbouring ommatidia that end in its lamina cartridge
+  (`flyloop.connectome.eyemap.neural_superposition`). Most cartridges get six of
+  them, those along the equator seven or eight, those at the rim fewer; each
+  photoreceptor is a cell of its own in the network, with its own noise. With
+  `superposition=False` every column has exactly one R1-R8 each, as in flyvis.
 
 Sampling. The world is read once per frame along a fixed set of directions that
 covers each eye's field of view evenly (a Fibonacci lattice, about
@@ -33,11 +38,13 @@ modelled. The eye's equator is level when the body is.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 from scipy import sparse
 from scipy.spatial import cKDTree
 
-from flyloop.connectome.eyemap import UV_OFFSETS, EyeColumns, eye_columns
+from flyloop.connectome.eyemap import UV_OFFSETS, EyeColumns, eye_columns, with_superposition
 from flyloop.geometry import angles, rotation_matrix
 
 from .compound_eye import EYE_ORDER
@@ -67,10 +74,12 @@ class OmmatidialEyes:
             Gaussian angular sensitivity. 0 gives one ray per column (no optics).
         sample_spacing_deg: Spacing of the directions the world is read along.
         columns: The eye's columns (default: `eye_columns()`).
+        superposition: Wire R1-R6 by neural superposition (module docstring).
 
     Attributes:
         columns, lattice: The `EyeColumns` (both names; `lattice` is what code
-            written for `Eyes` reads).
+            written for `Eyes` reads). With superposition, their `placement`
+            puts every R1-R6 in its cartridge.
         axes: (2, n_columns, 3) optical axes, eyes in EYE_ORDER (left, right),
             body frame.
         azimuth, elevation: (2, n_columns, 1) of the axes, in degrees.
@@ -79,8 +88,15 @@ class OmmatidialEyes:
     """
 
     def __init__(self, acceptance_angle_deg: float = ACCEPTANCE_ANGLE_DEG,
-                 sample_spacing_deg: float = 2.0, columns: EyeColumns | None = None):
-        self.columns = self.lattice = columns if columns is not None else eye_columns()
+                 sample_spacing_deg: float = 2.0, columns: EyeColumns | None = None,
+                 superposition: bool = True):
+        columns = columns if columns is not None else eye_columns()
+        self.superposition = bool(superposition)
+        if self.superposition and columns.placement is None:
+            columns = with_superposition(columns)
+        elif not self.superposition:
+            columns = replace(columns, placement=None)
+        self.columns = self.lattice = columns
         self.acceptance_angle_deg = float(acceptance_angle_deg)
         right = self.columns.directions
         self.axes = np.stack([right * MIRROR, right])

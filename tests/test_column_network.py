@@ -44,7 +44,7 @@ def test_hexagon_columns_give_flyvis_itself(flyvis_model, hexagon_model):
 
 def test_cells_that_skip_columns_keep_their_stride(hexagon_model):
     engine = hexagon_model.engine
-    on = np.flatnonzero(engine._column_node["Lawf1"] >= 0)
+    on = engine.node_columns["Lawf1"]
     assert 0 < len(on) < len(engine.u)
     assert (engine.u[on] % 3 == 0).all() and (engine.v[on] % 2 == 0).all()
 

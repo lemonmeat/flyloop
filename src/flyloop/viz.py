@@ -210,7 +210,7 @@ class ActivityFigure:
         self.fig = plt.figure(figsize=(4.8 * nb + 0.6, self._height), facecolor=SURFACE)
         outer = self.fig.add_gridspec(1, nb + 1, width_ratios=[1] * nb + [0.025], left=0.02,
                                       right=0.95, top=self._top(0.83),
-                                      bottom=footer + 0.14 / self._height, wspace=0.12)
+                                      bottom=footer + (0.14 + 0.36 * self.has_lptc) / self._height, wspace=0.12)
         img = dict(origin="lower", extent=ext, interpolation="nearest", aspect="equal")
         self.images, self.lines, self.cursors, self.lptc_lines = [], [], [], []
         for j, name in enumerate(names):
@@ -272,7 +272,8 @@ class ActivityFigure:
                 f = 0.35 * r / max(len(idx) - 1, 1)  # darken toward INK
                 color = tuple((1 - f) * a + f * b for a, b in zip(to_rgb(base), to_rgb(INK)))
                 lines.append((i, ax.plot([], [], color=color, lw=1.1, label=cells[i])[0]))
-        ax.set_ylim(*_limits(v))
+        lo, hi = _limits(v)
+        ax.set_ylim(lo, hi + 0.45 * (hi - lo))  # headroom for the legend
         ax.set_title(f"{name}: HS/VS voltage", fontsize=8.5, color=INK, loc="left")
         ax.set_xlabel("time in trial (s)", fontsize=7, color=MUTED, labelpad=1)
         ax.legend(fontsize=6, ncol=min(len(lines), 6), frameon=False, loc="upper left",

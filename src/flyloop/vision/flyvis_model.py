@@ -70,6 +70,8 @@ class FlyvisModel:
     Args:
         model: Path of the pretrained network relative to flyvis.results_dir.
             "flow/0000/000" is the best-ranked model of the 50-model ensemble.
+            Or the directory of a trained extension with the cell types flyvis
+            lacks (`flyloop.vision.extended`, scripts/train_extended.py).
         cell_types: Cell types to read out (default T4a-d, T5a-d).
         dt: Integration time step in seconds; stimuli must be sampled at dt.
         initial_state: "steady" (grey at value 0.5 for t_init seconds, as flyvis's
@@ -91,7 +93,10 @@ class FlyvisModel:
         noise: Optional `flyloop.perturb.Noise` (see `flyloop.perturb.set_noise`).
             When set, every stepped frame gets photoreceptor noise and every
             readout T4/T5 noise. The grey steady initial state and
-            `simulate(return_activity=True)` stay noise-free.
+            `simulate(return_activity=True)` stay noise-free. On flyvis's own
+            network one sample per column goes to all eight photoreceptors of
+            the column; on `columns` every photoreceptor gets its own, as photon
+            noise is (the recorder then keeps the noise-free luminance).
     """
 
     recorder = None
@@ -109,19 +114,25 @@ class FlyvisModel:
     ):
         from flyvis import NetworkView
 
-        self.model = model
+        from . import extended
+
+        self.model = str(model)
         self.dt = dt
         self.initial_state = initial_state
         self.t_init = t_init
-        results_dir = flyloop.FLYVIS_ROOT_DIR / "results"
-        self.view = NetworkView(results_dir / model, root_dir=results_dir)
-        self.network = self.view.init_network(checkpoint=checkpoint)
+        if extended.is_extension(model):
+            self.view = None  # flyvis's analysis tools only know pretrained models
+            self.network = extended.load(model)
+        else:
+            results_dir = flyloop.FLYVIS_ROOT_DIR / "results"
+            self.view = NetworkView(results_dir / model, root_dir=results_dir)
+            self.network = self.view.init_network(checkpoint=checkpoint)
         self.network.eval()
         self.device = next(self.network.parameters()).device
         _check_device(self.device)
         self.columns = columns
-        self.engine = (None if columns is None
-                       else ColumnNetwork(self.network, columns.u, columns.v))
+        self.engine = (None if columns is None else ColumnNetwork(
+            self.network, columns.u, columns.v, getattr(columns, "placement", None)))
         self.set_cell_types(cell_types)
 
     # --- readout indices ---------------------------------------------------------
@@ -286,10 +297,11 @@ class FlyvisModel:
     # The network is advanced through these four methods only, so that flyvis's
     # network and the column network share everything else (noise, recording).
 
-    def _stimulus(self, frames: torch.Tensor) -> torch.Tensor:
-        """Input current of every node, (batch, n_frames, n_nodes)."""
+    def _stimulus(self, frames: torch.Tensor, noise=None) -> torch.Tensor:
+        """Input current of every node, (batch, n_frames, n_nodes). noise: see
+        ColumnNetwork.stimulus (column network only)."""
         if self.engine is not None:
-            return self.engine.stimulus(frames)
+            return self.engine.stimulus(frames, noise)
         stim = self.network.stimulus
         stim.zero(frames.shape[0], frames.shape[1])
         stim.add_input(frames)
@@ -352,9 +364,13 @@ class FlyvisModel:
         frames = torch.as_tensor(frames, dtype=torch.float32, device=self.device)
         self._check_columns(frames)
         noise = self.noise
-        if noise is not None:
+        if noise is None:
+            x = self._stimulus(frames)
+        elif self.engine is not None:  # independent noise in every photoreceptor
+            x = self._stimulus(frames, noise.photoreceptors)
+        else:
             frames = noise.photoreceptors(frames)
-        x = self._stimulus(frames)
+            x = self._stimulus(frames)
         if state is None:
             state = self._initial_state(frames.shape[0])
         recorder = self.recorder

@@ -71,9 +71,11 @@ Windows wheels are CPU-only. Optional extras: `--extras video` (MP4/GIF output) 
 
 Two data sets are cached once per machine in `data/connectome`:
 
-- The columns and the HS/VS weights come from the Janelia male optic lobe (neuPrint
-  dataset `optic-lobe:v1.1`, CC-BY 4.0). Copy `.env.example` to `.env` (gitignored)
-  and add your token from neuprint.janelia.org > Account.
+- The columns, the HS/VS weights and the cell types flyvis lacks come from the
+  Janelia male optic lobe (neuPrint dataset `optic-lobe:v1.1`, CC-BY 4.0). Copy
+  `.env.example` to `.env` (gitignored) and add your token from
+  neuprint.janelia.org > Account. The extended flyvis connectome is written to
+  `data/connectome/optic-lobe-v1.1/extension/connectome.json`.
 - The viewing directions of the ommatidia come from the micro-CT eye map of Zhao et
   al. (2025), downloaded from [reiserlab/eyemap_T4](https://github.com/reiserlab/eyemap_T4)
   (GPL-3.0) at a fixed commit. It needs no account.
@@ -188,6 +190,7 @@ Settings shared by all experiments (output folder, index, seed) are in
 | `noise` | `scores.csv`, `timeseries.csv`, `t4t5_dsi.csv`, `corridor_paths.png`; open-loop and closed-loop scores in `meta.json` |
 | `summarize_noise` | In `runs/noise`: `summary.csv` (one row per run), `noise_levels.png`, `behaviour_vs_dsi.png` |
 | `flybody_corridor` | `timeseries.csv`, `flybody_corridor.png`, `flybody_corridor.mp4` (chase and top views; below, what both eyes see) |
+| `train_extended` | `network.pt`, `connectome.json`, `extension.json` (the trained extension: `model=<run folder>` in any experiment), `loss.csv`, `validation.csv`, `training.png` |
 | `benchmark_speed` | `benchmark.json`, `benchmark.txt`: wall-clock time per simulated second of flyvis |
 | `animate_corridor` | `corridor_animation.mp4` (or `.gif`) from a finished `corridor` run |
 | `animate_corridor_activity` | `viz/corridor_activity_trial<k>.mp4`: a recorded corridor trial from above, with its photoreceptor and T4/T5 maps and HS/VS traces |
@@ -247,7 +250,9 @@ takes its structure from data. Nothing is fitted to behaviour.
 | Viewing directions | Lens-to-photoreceptor axis of each ommatidium of a right eye, from micro-CT. 843 columns have a measured direction; the 49 columns this eye lacks, mostly at the anterior rim, continue the measured lattice | Zhao et al. 2025 |
 | Registration | Column (hex1, hex2) is ommatidium (p, q) = (hex2 - 19, hex1 - 18): both grids put their origin on the equator and the central meridian. No parameter is fitted | Nern et al. 2025, Zhao et al. 2025 |
 | Optics | Gaussian angular sensitivity, acceptance angle (full width at half maximum) 7.7 deg | Light-adapted R1-6, Juusola et al. 2017 |
-| Photoreceptors to T4/T5 | The 65 cell types and 2,355 connections (cell types and column offset) of flyvis, with its learned resting potentials, time constants and synaptic scalings, repeated on every column: 56,498 cells and 1,880,992 connections per eye | flyvis 1.2.0 (FIB-25 connectome, Lappalainen et al. 2024) |
+| Neural superposition | R7 and R8 end in the column of their own ommatidium; each R1-R6 ends in the lamina cartridge of the neighbouring ommatidium whose axis it shares. Most cartridges pool six, the six rows along the equator seven or eight, the rim fewer: 5,192 R1-R6 in all, each with its own photon noise | Rule of the Neurokernel retina model (Kirschfeld 1967; Braitenberg 1967) |
+| Photoreceptors to T4/T5 | The 65 cell types and 2,355 connections (cell types and column offset) of flyvis, with its learned resting potentials, time constants and synaptic scalings, repeated on every column: 56,338 cells and 1,879,939 connections per eye | flyvis 1.2.0 (FIB-25 connectome, Lappalainen et al. 2024) |
+| Cell types flyvis lacks (optional) | 33 types from optic-lobe:v1.1, mostly Dm and Pm interneurons, with their column offsets and synapse counts; parameters fitted on flyvis's task | optic-lobe:v1.1; see [Cell types flyvis lacks](#cell-types-flyvis-lacks) |
 | T4/T5 to HS/VS, LPi | Synapse counts of every T4/T5 cell, placed in the column of its dendrites: all 6,793 T4/T5 cells and all 123,822 of their synapses onto HS and VS | optic-lobe:v1.1 |
 | HS/VS membrane | Time-constant presets (see above) | Borst and Haag 1996 |
 
@@ -269,6 +274,12 @@ takes its structure from data. Nothing is fitted to behaviour.
   across the eye, and T4/T5 preferred directions follow it (Zhao et al. 2025). The
   rotation decoder's matched filters therefore use the lattice axes of each column
   (`OmmatidialEyes.motion_basis`).
+- **Neural superposition.** In each half of the eye the six source ommatidia of a
+  cartridge lie away from the equator, so axons cross the equator from both sides.
+  The rule thereby gives six rows of cartridges with seven or eight R1-R6 along the
+  equator, as described for Drosophila, without being fitted to them
+  (`tests/test_superposition.py`). `eyes.superposition=false` gives every column
+  exactly one R1-R8 each, as flyvis has it.
 
 Limits:
 
@@ -279,10 +290,97 @@ Limits:
   parameters, not the circuit of optic-lobe:v1.1. flyvis was trained on a regular
   lattice whose columns do not overlap; on the eye, neighbouring columns are 3.5 to
   7 deg apart (5th to 95th percentile, median 4.8) and their photoreceptors overlap.
+- Superposition is taken to be perfect: every R1-R6 looks exactly along the axis
+  of its cartridge. In Drosophila the six axes are not perfectly aligned.
+  optic-lobe:v1.1 cannot check the wiring rule: its lamina covers about 510 of 892
+  cartridges, R1-R6 are one type there, and the retina is outside the volume.
 - The left eye is the mirror image of the right, since the connectome holds one
   optic lobe. Both eyes see the world from one point, and the eye's equator is
   level when the body is.
 - VS cells are numbered front to back by their input, not by anatomical identity.
+
+### Cell types flyvis lacks
+
+flyvis models 65 cell types. In optic-lobe:v1.1 those cells get much of their input
+from types it does not have: 40% of Mi1's, 51% of Mi4's, 44% of Tm1's and Tm2's
+(medulla, lobula and lamina synapses). The dendrites of T4 and T5 are nearly
+complete (7.5% missing); the large share missing at their axon terminals is in the
+lobula plate, where the HS/VS layer takes over. `flyloop.connectome.extension`
+adds the missing types that matter, in flyvis's own connectome format, and
+`scripts/train_extended.py` fits their parameters the way flyvis fitted its own.
+
+Which types: those that supply at least 5% of some flyvis type's input, get at
+least half of their own input in the optic lobe (centrifugal cells are out: their
+drive is not modelled), have at least 20 cells to tile the eye, release
+acetylcholine, GABA or glutamate, and can be placed in columns. 33 types pass,
+mostly Dm and Pm medulla interneurons (Dm9, Dm12, Dm20, Dm3c, Dm8a/b, Pm2a/b,
+...) and some columnar and lobula types (Tm12, Tm29, Tm39, TmY16, Y3, LC21);
+`selection.csv` in the cache lists every candidate and why it was kept or not.
+
+How they are wired:
+
+- Every cell sits in its assigned column or at the synapse-weighted centroid of its
+  medulla and lobula column regions. A type with fewer cells than columns sits on
+  every n-th column, as flyvis does for Lawf1 and Lawf2.
+- A connection is the mean synapse count per pair of cells at each column offset,
+  counted over all pairs of existing cells. This is flyvis's own definition for
+  columnar types, and it is not biased by sparse types, missing cells or the rim.
+  Pairs of two sparse types fall back to the mean over all offsets at the same
+  distance.
+- Counts are rescaled by each type's true density over its density in the model,
+  so a target cell gets the input the connectome gives it: 94.5% of the new
+  connections' synapses, synapse-weighted, after dropping offsets below half a
+  synapse. 743 new connections; 18 of them, between two sparse types whose strides
+  never meet at their offset, compile to nothing.
+- Signs follow the transmitter (acetylcholine +1, GABA and glutamate -1, as in
+  flyvis). Connections among flyvis's own types stay exactly as flyvis has them.
+
+How they are fitted: flyvis's network with the new types is trained on flyvis's
+own task (optic flow in MPI Sintel, its split, augmentation, loss, decoder and
+learning-rate schedule), with every pretrained parameter and the decoder held
+fixed. Only the 791 parameters that touch a new type move: 33 resting potentials,
+33 time constants and 725 synaptic scalings. `tests/test_extension.py` checks that
+with the new types' output switched off the network is exactly flyvis.
+
+Results (`runs/train_extended/0_0`, 20,000 iterations, about 85 minutes on an RTX
+3060; the best validation came at iteration 4,000):
+
+| Network | Validation loss | End-point error |
+| --- | --- | --- |
+| flyvis, pretrained | 472.1 | 2.090 |
+| with the new types, before training | 1758.5 | 8.13 |
+| with the new types, trained | 471.4 | 2.089 |
+
+Both are scored the same way, on the 17 sequences the pretrained model never saw
+(the validation value stored with the pretrained model, 5.14, uses a protocol
+flyvis 1.2.0 does not reproduce, so it is not used). Training switched off 26 of
+the 725 new connections (Dm4 lost all of its output onto flyvis's cells) and kept
+the others near their initial strength (median 0.86 of it for outputs onto flyvis
+cells). T4/T5 direction tuning in the central column is unchanged: every
+subtype keeps its preferred direction within 3 deg and its direction selectivity
+within 0.05 (`runs/openloop_tuning/pretrained_0` against `extended_0`). On the
+eye with neural superposition the corridor behaves as before: HS plus efference
+copy and saccadic flight centre in all four starts (offset RMS 0.032 and 0.045,
+against 0.027 and 0.036 without the new types).
+
+What did not work out: six new types stay nearly silent on natural scenes. Dm18,
+Dm20, Pm9 and MeLo10 are never above threshold on the held-out sequences, and Dm9
+and Pm2a in under 5% of cells and frames, so they pass on almost nothing. A silent
+cell gets no gradient, and flyvis's activity penalty at flyvis's learning rate is
+far too weak in a fine-tuning run to lift it. A second run used the penalty only
+against silence, 300 times stronger (`activity_penalty.lr_scale=300 baseline=0.25
+above_weight=0`, `runs/train_extended/1_0`): its best validation is 473.1 (EPE
+2.105), and it brings Dm9, Dm20, Pm9 and MeLo10 above threshold only 1.6 to 6% of
+the time; Pm2a stays below 1% and Dm18 silent. At rest these types get several
+times more inhibition than excitation: Dm20 and Pm9 from Mi4 (GABA), Dm18 and
+MeLo10 from TmY5a (inhibitory in flyvis), Dm9 from R8. Two choices behind that are
+open to question: photoreceptor (histamine) synapses onto the new types are taken
+to be inhibitory, and inputs from types that are not added (each under 5% of a
+target's input) are missing.
+
+Use the extension in any experiment with `model=runs/train_extended/0_0` (or
+`model.name=...` where the config nests it): it runs on flyvis's hexagon or, through
+`ColumnNetwork`, on the eye's columns with neural superposition.
 
 ```
 src/flyloop/
@@ -290,10 +388,12 @@ src/flyloop/
   eyes/         two compound eyes: the connectome's columns with measured directions
                 and optics (ommatidia.py), or the flyvis hexagon (compound_eye.py)
   vision/       pretrained flyvis wrapper returning T4/T5 time series; the flyvis
-                network on any set of columns (column_network.py)
+                network on any set of columns (column_network.py); the network with
+                the cell types flyvis lacks (extended.py)
   lptc/         HS/VS rate model with LPi inhibition; connectome or simple weights
   connectome/   neuPrint optic-lobe:v1.1 loaders, alignment of its columns to flyvis,
-                the eye's columns and their viewing directions (eyemap.py)
+                the eye's columns, viewing directions and neural superposition
+                (eyemap.py), the cell types flyvis lacks (extension.py)
   control/      rotation decoder, fitted readout, PD / corridor / efference / saccadic controllers
   sim/          worlds, visual rig, bodies, closed loop
   perturb/      T4/T5 silencing, noise at photoreceptors, T4/T5 or HS/VS

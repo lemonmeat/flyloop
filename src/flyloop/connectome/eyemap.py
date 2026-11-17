@@ -30,6 +30,35 @@ the lattice symmetry that `flyloop.connectome.columns.fit_alignment` finds from
 the wiring of T4 and T5. On that lattice +x is anterior and +y dorsal, which the
 measured directions confirm independently (tests/test_eyemap.py).
 
+Neural superposition (`neural_superposition`). R7 and R8 of an ommatidium end in
+the medulla column of that ommatidium. R1-R6 do not: each of them shares its
+optical axis with the R7/R8 of a neighbouring ommatidium and ends in that
+ommatidium's lamina cartridge, so a cartridge pools six photoreceptors from six
+ommatidia that all look the same way (Kirschfeld 1967; Braitenberg 1967). Which
+neighbour each R1-R6 comes from is the rule of the Neurokernel retina model
+(Neurokernel RFC #3; `retina/geometry/opticaxis.py` of
+https://github.com/neurokernel/retina), restated here in anatomical directions.
+Seen from a cartridge in the dorsal half of either eye:
+
+    R1  the anterior-ventral neighbour     R4  the dorsal neighbour
+    R2  the anterior-dorsal neighbour      R5  the posterior-dorsal neighbour
+    R3  two rows away: dorsal, then        R6  the posterior-ventral neighbour
+        anterior-dorsal
+
+The ventral half is the mirror image across the equator. Each ommatidium follows
+the rule of its own half, so the axons of ommatidia next to the equator cross it
+from both sides. That makes cartridges along the equator receive more than six
+R1-R6, and cartridges at the rim of the eye fewer, both as in the fly
+(Horridge and Meinertzhagen 1970; the equatorial cartridges with seven and eight
+photoreceptors that Nern et al. 2025 and Zhao et al. 2025 use as landmarks).
+Ommatidia whose (hex2 - 19) + (hex1 - 18) is 0 or more are taken as dorsal: in
+the scan, the ommatidia marked as the first dorsal and ventral rows are exactly
+the rows 0 and -1 of that sum. optic-lobe:v1.1 has too little of the lamina to
+check the rule: R1-R6 are one type there, cover about 510 of 892 cartridges, and
+the retina, which would say from which ommatidium each comes, is outside the
+volume. The optical axes are taken to be perfectly superposed (each R1-R6 looks
+along the axis of the cartridge it ends in); in Drosophila they are not exactly.
+
 Data: https://github.com/reiserlab/eyemap_T4 (GPL-3.0), the code and data of
 Zhao et al., "Eye structure shapes neuron function in Drosophila motion vision",
 Nature 646, 135-142 (2025). `fetch_eyemap` downloads two files of one commit and
@@ -140,6 +169,9 @@ class EyeColumns:
             measured lattice (False).
         spacing_deg: Median angle between vertically neighbouring columns.
         info: How the columns were built.
+        placement: Optional {photoreceptor type: column index of each cell}, for
+            cell types whose cells are not one per column (see
+            `neural_superposition`). None: one cell of every type per column.
     """
 
     hex1: np.ndarray
@@ -150,6 +182,7 @@ class EyeColumns:
     measured: np.ndarray = field(repr=False)
     spacing_deg: float = 5.0
     info: dict = field(default_factory=dict, repr=False)
+    placement: dict | None = field(default=None, repr=False)
 
     @property
     def n_hexals(self) -> int:
@@ -185,6 +218,72 @@ class EyeColumns:
         xy = _hex_layout(np.asarray(hex1, float), np.asarray(hex2, float))
         dist, index = cKDTree(_hex_layout(self.hex1, self.hex2)).query(xy)
         return np.where(dist <= max_columns + 1e-9, index, -1)
+
+
+# --- neural superposition ---------------------------------------------------------------
+
+# neighbours in (dhex1, dhex2), by anatomical direction (see _hex_layout)
+DORSAL, VENTRAL = (1, 1), (-1, -1)
+ANTERIOR_DORSAL, ANTERIOR_VENTRAL = (1, 0), (0, -1)
+POSTERIOR_DORSAL, POSTERIOR_VENTRAL = (0, 1), (-1, 0)
+# where each of R1-R6 of a cartridge in the dorsal half comes from (module docstring)
+SUPERPOSITION_DORSAL = {
+    "R1": ANTERIOR_VENTRAL,
+    "R2": ANTERIOR_DORSAL,
+    "R3": (DORSAL[0] + ANTERIOR_DORSAL[0], DORSAL[1] + ANTERIOR_DORSAL[1]),
+    "R4": DORSAL,
+    "R5": POSTERIOR_DORSAL,
+    "R6": POSTERIOR_VENTRAL,
+}
+_MIRROR = {DORSAL: VENTRAL, ANTERIOR_DORSAL: ANTERIOR_VENTRAL, ANTERIOR_VENTRAL: ANTERIOR_DORSAL,
+           POSTERIOR_DORSAL: POSTERIOR_VENTRAL, POSTERIOR_VENTRAL: POSTERIOR_DORSAL}
+
+
+def _mirror_offset(offset: tuple[int, int]) -> tuple[int, int]:
+    """Reflect a lattice offset across the equator (dorsal <-> ventral). Offsets
+    are sums of the six neighbour steps, and reflection is linear."""
+    # in (q, p) = (dhex1, dhex2): layout x = q - p is kept, y = p + q flips,
+    # so (q, p) -> (-p, -q)
+    return (-offset[1], -offset[0])
+
+
+SUPERPOSITION_VENTRAL = {k: _mirror_offset(v) for k, v in SUPERPOSITION_DORSAL.items()}
+assert all(_mirror_offset(a) == b for a, b in _MIRROR.items())
+
+
+def is_dorsal(hex1, hex2) -> np.ndarray:
+    """Whether ommatidia (columns) lie in the dorsal half of the eye."""
+    return (np.asarray(hex1) - ORIGIN_HEX[0]) + (np.asarray(hex2) - ORIGIN_HEX[1]) >= 0
+
+
+def neural_superposition(columns: EyeColumns) -> dict[str, np.ndarray]:
+    """Where the R1-R6 of every ommatidium end: {"R1".."R6": column index of the
+    cartridge of each photoreceptor}, one entry per photoreceptor whose cartridge
+    is in the eye (see the module docstring). The ommatidia are the columns.
+
+    A cartridge can appear several times for one type (two R1 near the equator)
+    or not at all (at the rim)."""
+    index = {(a, b): i for i, (a, b) in enumerate(zip(columns.hex1.tolist(),
+                                                       columns.hex2.tolist()))}
+    dorsal = is_dorsal(columns.hex1, columns.hex2)
+    out = {}
+    for k in SUPERPOSITION_DORSAL:
+        target = []
+        for j, (a, b) in enumerate(zip(columns.hex1.tolist(), columns.hex2.tolist())):
+            # the cartridge c with c + offset = j, for the rule of j's own half
+            da, db = (SUPERPOSITION_DORSAL if dorsal[j] else SUPERPOSITION_VENTRAL)[k]
+            c = index.get((a - da, b - db), -1)
+            if c >= 0:
+                target.append(c)
+        out[k] = np.array(sorted(target), dtype=int)
+    return out
+
+
+def with_superposition(columns: EyeColumns) -> EyeColumns:
+    """A copy of the columns whose R1-R6 are placed by neural superposition."""
+    from dataclasses import replace
+
+    return replace(columns, placement=neural_superposition(columns))
 
 
 # flyvis neighbours in a fixed order, with their layout offsets (x anterior, y dorsal)

@@ -56,7 +56,7 @@ def test_settings_keep_what_the_chosen_eyes_read():
     assert calibration_settings(hexagon) == calibration_settings(CFG)  # as saved before
     eye = calibration_settings({**CFG, "eyes": {"model": "ommatidia", **both}})
     assert eye["eyes"] == {"model": "ommatidia", "acceptance_angle_deg": 7.7,
-                           "sample_spacing_deg": 2.0}
+                           "sample_spacing_deg": 2.0, "superposition": True}
     assert eye == calibration_settings({**CFG, "eyes": {"model": "ommatidia", **both,
                                                         "n_sub": 5}})
 

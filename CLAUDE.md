@@ -26,6 +26,11 @@ changes. This file holds only the conventions for changing the code.
   `FlyvisModel(columns=eyes.columns)`, `LPTCWeights.from_source(source, eyes.lattice)`,
   and `sample_spacing_deg=eyes.sample_spacing_deg` for worlds that prefilter. Never
   assume 721 columns; ask the model (`n_columns`, `nodes_of`) or the lattice.
+- Leave flyvis's own cell types, connections and pretrained parameters as they
+  are. Cell types it lacks go into the extended connectome
+  (`flyloop.connectome.extension`) and get trained parameters of their own
+  (`flyloop.vision.extended`, `scripts/train_extended.py`); a trained extension
+  loads with `FlyvisModel(model=<its run folder>)`.
 - Code must run on CPU and CUDA alike: use pathlib, create tensors on the model's
   device, and call `.cpu()` before `.numpy()`.
 - Keep perturbations (noise, time-constant scaling, ablation) as hooks on the single

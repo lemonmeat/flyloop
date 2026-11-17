@@ -26,14 +26,18 @@ CORRIDOR_KEYS = ("pattern", "square", "alpha", "contrast", "length")
 
 
 EYE_KEYS = {"hexagon": ("axis_azimuth_deg", "n_sub"),
-            "ommatidia": ("model", "acceptance_angle_deg", "sample_spacing_deg")}
+            "ommatidia": ("model", "acceptance_angle_deg", "sample_spacing_deg",
+                          "superposition")}
 
 
 def eye_settings(eyes: dict) -> dict:
     """The settings the chosen eye model reads (`flyloop.eyes.make_eyes`). The
     hexagon's are written as before `eyes.model` existed, so calibrations saved
     then still fit it."""
-    return {k: eyes[k] for k in EYE_KEYS[eyes.get("model") or "hexagon"]}
+    out = {k: eyes.get(k) for k in EYE_KEYS[eyes.get("model") or "hexagon"]}
+    if out.get("model") == "ommatidia" and out["superposition"] is None:
+        out["superposition"] = True  # the default of make_eyes
+    return out
 
 
 def calibration_settings(cfg) -> dict:

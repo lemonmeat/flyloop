@@ -21,6 +21,8 @@ eyes:
   acceptance_angle_deg: 7.7  # ommatidia: full width at half maximum of a photoreceptor's
                              # angular sensitivity (light-adapted R1-6, Juusola et al. 2017)
   sample_spacing_deg: 2.0    # ommatidia: spacing of the directions the world is read along
+  superposition: true        # ommatidia: R1-R6 wired by neural superposition (6 per cartridge,
+                             # 7-8 along the equator, fewer at the rim); false: 1 each per column
   axis_azimuth_deg: 80.0     # hexagon: angle between each eye's axis and straight ahead
   n_sub: 3                   # hexagon: n_sub x n_sub points averaged per column
 

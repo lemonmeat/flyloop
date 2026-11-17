@@ -139,7 +139,8 @@ def make_eyes(cfg):
     """The eyes an experiment config asks for (its `eyes` section).
 
     model: "hexagon" builds `Eyes` from axis_azimuth_deg and n_sub; "ommatidia"
-    builds `OmmatidialEyes` from acceptance_angle_deg and sample_spacing_deg.
+    builds `OmmatidialEyes` from acceptance_angle_deg, sample_spacing_deg and
+    superposition (default true).
     A section without `model` is the hexagon.
     """
     model = cfg.get("model") or "hexagon"
@@ -148,5 +149,6 @@ def make_eyes(cfg):
     if model == "ommatidia":
         from .ommatidia import OmmatidialEyes
 
-        return OmmatidialEyes(cfg.acceptance_angle_deg, cfg.sample_spacing_deg)
+        return OmmatidialEyes(cfg.acceptance_angle_deg, cfg.sample_spacing_deg,
+                              superposition=cfg.get("superposition", True))
     raise ValueError(f"unknown eyes.model {model!r}; use hexagon or ommatidia")

@@ -13,6 +13,13 @@ coordinates u, v) and connects them by flyvis's own rule: a connection of a give
 offset exists wherever both of its cells do, so columns at the rim simply miss the
 inputs that would come from beyond it, as at the rim of flyvis's hexagon. Cell
 types that flyvis places on every n-th column (Lawf1, Lawf2) keep their stride.
+
+A `placement` can put the cells of a type elsewhere: any number per column,
+including none. Every cell then makes its type's connections from the column it
+sits in. Neural superposition uses this for R1-R6
+(`flyloop.connectome.eyemap.neural_superposition`): each photoreceptor sits in
+the cartridge its axon ends in, so a cartridge at the rim has fewer of them and
+one at the equator has more.
 The dynamics are flyvis's (`PPNeuronIGRSynapses`, forward Euler):
 
     V <- V + dt / max(tau, dt) * (-V + V_rest + W relu(V) + input)
@@ -31,18 +38,20 @@ class ColumnNetwork:
     """Args:
         network: A flyvis `Network` (the source of every constant).
         u, v: (n_columns,) integer flyvis lattice coordinates of the columns.
+        placement: Optional {cell type: column index of each of its cells}. Types
+            not in it get one cell per column they occupy in flyvis.
 
     Attributes:
         cell_types: Names, in flyvis order.
-        layer_index: {cell type: node indices}, one node per column the type
-            occupies, in the order of the given columns.
-        central_index: {cell type: node index at column (0, 0)}.
-        input_index: (n_input_types, n_columns) nodes that receive the stimulus
-            (the photoreceptors R1-R8).
+        layer_index: {cell type: node indices}, in column order.
+        node_columns: {cell type: column index of each of its nodes}.
+        central_index: {cell type: a node at column (0, 0), or -1}.
+        input_nodes, input_columns: The nodes that receive the stimulus (the
+            photoreceptors R1-R8) and the column whose luminance each receives.
         n_nodes, n_edges: Size of the network.
     """
 
-    def __init__(self, network, u, v):
+    def __init__(self, network, u, v, placement: dict | None = None):
         self.network = network
         self.device = next(network.parameters()).device
         self.u, self.v = np.asarray(u, int), np.asarray(v, int)
@@ -51,6 +60,13 @@ class ColumnNetwork:
         c = network.connectome
         self.cell_types = [t.decode() for t in c.unique_cell_types[:]]
         self.input_types = [t.decode() for t in c.input_cell_types[:]]
+        self.placement = {k: np.asarray(p, int) for k, p in (placement or {}).items()}
+        unknown = set(self.placement) - set(self.cell_types)
+        if unknown:
+            raise ValueError(f"placement of unknown cell types {sorted(unknown)}")
+        for k, p in self.placement.items():
+            if len(p) and (p.min() < 0 or p.max() >= len(self.u)):
+                raise ValueError(f"placement of {k} refers to columns that do not exist")
         self._build_nodes()
         self._build_edges()
         self.refresh()
@@ -58,33 +74,36 @@ class ColumnNetwork:
     # --- structure ---------------------------------------------------------------
 
     def _build_nodes(self) -> None:
-        """One node per cell type and column, on the columns the type occupies."""
+        """The cells of every type, in column order: by `placement`, or one per
+        column the type occupies in flyvis."""
         c = self.network.connectome
         f_type = c.nodes.type[:].astype(str)
         f_u, f_v = c.nodes.u[:], c.nodes.v[:]
-        self.layer_index, self.central_index, self._column_node = {}, {}, {}
+        self.layer_index, self.node_columns, self.central_index = {}, {}, {}
         self._first = {}  # a flyvis node of each type, to read its parameters from
+        origin = np.flatnonzero((self.u == 0) & (self.v == 0))
         n = 0
         for t in self.cell_types:
             sel = np.flatnonzero(f_type == t)
             self._first[t] = int(sel[0])
-            # flyvis keeps a type on the columns where u and v are multiples of
-            # its strides; recover them from the columns it occupies
-            su, sv = int(np.gcd.reduce(f_u[sel])), int(np.gcd.reduce(f_v[sel]))
-            on = (self.u % max(su, 1) == 0) & (self.v % max(sv, 1) == 0)
-            if su == 0:  # a type with a single cell, at the origin
-                on = (self.u == 0) & (self.v == 0)
-            node = np.full(len(self.u), -1)
-            node[on] = n + np.arange(on.sum())
-            n += int(on.sum())
-            self._column_node[t] = node
-            self.layer_index[t] = node[on]
-            centre = on & (self.u == 0) & (self.v == 0)
-            self.central_index[t] = int(node[centre][0]) if centre.any() else -1
+            if t in self.placement:
+                cols = np.sort(self.placement[t])
+            else:
+                # flyvis keeps a type on the columns where u and v are multiples
+                # of its strides; recover them from the columns it occupies
+                su, sv = int(np.gcd.reduce(f_u[sel])), int(np.gcd.reduce(f_v[sel]))
+                on = (self.u % max(su, 1) == 0) & (self.v % max(sv, 1) == 0)
+                if su == 0:  # a type with a single cell, at the origin
+                    on = (self.u == 0) & (self.v == 0)
+                cols = np.flatnonzero(on)
+            self.node_columns[t] = cols
+            self.layer_index[t] = n + np.arange(len(cols))
+            at_origin = np.flatnonzero(np.isin(cols, origin))
+            self.central_index[t] = int(self.layer_index[t][at_origin[0]]) if len(at_origin) else -1
+            n += len(cols)
         self.n_nodes = n
-        if any((self._column_node[t] < 0).any() for t in self.input_types):
-            raise ValueError("every column needs its photoreceptors")
-        self.input_index = np.stack([self._column_node[t] for t in self.input_types])
+        self.input_nodes = np.concatenate([self.layer_index[t] for t in self.input_types])
+        self.input_columns = np.concatenate([self.node_columns[t] for t in self.input_types])
 
     def _build_edges(self) -> None:
         """Repeat every connection of flyvis (cell types and column offset)
@@ -105,19 +124,30 @@ class ColumnNetwork:
         u0, v0 = self.u.min(), self.v.min()
         grid = np.full((self.u.max() - u0 + 1, self.v.max() - v0 + 1), -1)
         grid[self.u - u0, self.v - v0] = np.arange(len(self.u))
+        # the nodes of each type in each column: start and count (nodes are in
+        # column order)
+        n_col = len(self.u)
+        count, start = {}, {}
+        for t in self.cell_types:
+            count[t] = np.bincount(self.node_columns[t], minlength=n_col)
+            first_node = self.layer_index[t][0] if len(self.layer_index[t]) else 0
+            start[t] = first_node + np.concatenate([[0], np.cumsum(count[t])[:-1]])
         rows, cols, kind_of_edge = [], [], []
         for k, (s, t, du, dv) in enumerate(kinds):
-            s_node = self._column_node[self.cell_types[s]]
-            t_node = self._column_node[self.cell_types[t]]
-            tu, tv = self.u + du - u0, self.v + dv - v0  # target column of each source
+            s_type, t_type = self.cell_types[s], self.cell_types[t]
+            s_nodes, s_cols = self.layer_index[s_type], self.node_columns[s_type]
+            tu, tv = self.u[s_cols] + du - u0, self.v[s_cols] + dv - v0  # target column
             inside = (tu >= 0) & (tu < grid.shape[0]) & (tv >= 0) & (tv < grid.shape[1])
             col = np.where(inside, grid[np.clip(tu, 0, grid.shape[0] - 1),
                                         np.clip(tv, 0, grid.shape[1] - 1)], -1)
-            ok = (col >= 0) & (s_node >= 0)
-            ok[ok] &= t_node[col[ok]] >= 0
-            rows.append(t_node[col[ok]])
-            cols.append(s_node[ok])
-            kind_of_edge.append(np.full(int(ok.sum()), k))
+            ok = col >= 0
+            # every target cell in that column: usually one, at the rim or for a
+            # strided type none, and near the equator two superposed photoreceptors
+            n_t = count[t_type][col[ok]]
+            within = np.arange(n_t.sum()) - np.repeat(np.cumsum(n_t) - n_t, n_t)
+            rows.append(np.repeat(start[t_type][col[ok]], n_t) + within)
+            cols.append(np.repeat(s_nodes[ok], n_t))
+            kind_of_edge.append(np.full(int(n_t.sum()), k))
         self._rows, self._cols = np.concatenate(rows), np.concatenate(cols)
         self._kind_of_edge = np.concatenate(kind_of_edge)
         self.n_edges = len(self._rows)
@@ -155,7 +185,8 @@ class ColumnNetwork:
         values = torch.as_tensor(kind_w[self._kind_of_edge], device=dev)
         self.weight = torch.sparse_coo_tensor(
             index, values, (self.n_nodes, self.n_nodes), check_invariants=True).coalesce()
-        self._input_t = torch.as_tensor(self.input_index, device=dev)
+        self._input_nodes = torch.as_tensor(self.input_nodes, device=dev)
+        self._input_columns = torch.as_tensor(self.input_columns, device=dev)
 
     # --- dynamics ----------------------------------------------------------------
 
@@ -163,12 +194,19 @@ class ColumnNetwork:
         """flyvis's initial state: every cell at its resting potential."""
         return self.bias.expand(batch_size, -1).clone()
 
-    def stimulus(self, frames: torch.Tensor) -> torch.Tensor:
+    def stimulus(self, frames: torch.Tensor, noise=None) -> torch.Tensor:
         """Input current of every node, (batch, n_frames, n_nodes), for frames
         (batch, n_frames, 1, n_columns) or one frame (batch, 1, n_columns): the
-        luminance of a column goes to each of its photoreceptors."""
+        luminance of a column goes to each photoreceptor that looks along it.
+
+        noise: Optional function applied to the light of the photoreceptors,
+            (..., n_photoreceptors), so that every photoreceptor gets its own.
+        """
+        light = frames[..., 0, :][..., self._input_columns]
+        if noise is not None:
+            light = noise(light)
         x = frames.new_zeros((*frames.shape[:-2], self.n_nodes))
-        x[..., self._input_t] = frames
+        x[..., self._input_nodes] = light
         return x
 
     def next_state(self, activity: torch.Tensor, x: torch.Tensor, dt: float) -> torch.Tensor:
