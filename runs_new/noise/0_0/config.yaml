@@ -1,0 +1,110 @@
+index: 0
+seed: 0
+out_root: runs_new
+sweep_list:
+- noise:
+    photoreceptor: 0.0
+- noise:
+    photoreceptor: 0.1
+- noise:
+    photoreceptor: 0.2
+- noise:
+    photoreceptor: 0.4
+- noise:
+    photoreceptor: 0.8
+- noise:
+    t4t5: 0.3
+- noise:
+    t4t5: 1.0
+- noise:
+    t4t5: 3.0
+- noise:
+    t4t5: 10.0
+- noise:
+    lptc: 0.01
+- noise:
+    lptc: 0.03
+- noise:
+    lptc: 0.1
+- noise:
+    lptc: 0.3
+eyes:
+  model: hexagon
+  acceptance_angle_deg: 7.7
+  sample_spacing_deg: 2.0
+  superposition: true
+  axis_azimuth_deg: 80.0
+  n_sub: 3
+viz:
+  enabled: false
+  trials: null
+  batch:
+  - 0
+  - 1
+  every: 1
+  max_frames: 1500
+  vmax: null
+  movie: true
+  fps: 25
+sweep: noise
+model: flow/0000/000
+dt: 0.01
+lptc:
+  source: connectome
+  preset: simple
+  tau_lptc: null
+  tau_lpi: null
+noise:
+  photoreceptor: 0.0
+  t4t5: 0.0
+  lptc: 0.0
+  repeats: 5
+corridor:
+  pattern: checker
+  square: 0.1
+  alpha: 1.0
+  contrast: 1.0
+  length: 8.0
+  train_seed: 0
+  test_seed: 1
+speed: 0.5
+body_tau_s: 0.05
+collision_margin: 0.03
+controller:
+  kc: 150.0
+  kh: 3.0
+  heading: visual
+  filter_tau_s: 0.5
+starts:
+- - 0.25
+  - 0.0
+- - -0.25
+  - 0.0
+- - 0.0
+  - 30.0
+- - 0.0
+  - -30.0
+t_run: 12.0
+t_settle: 1.0
+t_score: 4.0
+openloop:
+  omega_deg_s: 90.0
+  t_move: 1.5
+  square_deg: 20.0
+  edges:
+    directions_deg:
+    - 0
+    - 45
+    - 90
+    - 135
+    - 180
+    - 225
+    - 270
+    - 315
+    speed_deg_s: 110.2
+    start_deg: -100.0
+    end_deg: 100.0
+    t_pre: 1.0
+    t_post: 0.5
+    n_sub: 5
+    window_deg: 22.5

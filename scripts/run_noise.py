@@ -7,8 +7,10 @@ Gaussian noise is added at the photoreceptors, at T4/T5 or at HS/VS
    sphere), its baseline in centred straight flight and b, the yaw estimate per
    corridor width of offset. Every noise level therefore meets the same fly;
 2. switches the noise on and scores it open loop:
-     T4/T5  DSI of the central column to moving ON and OFF edges (the
-            openloop_tuning definition, each subtype at its own polarity);
+     T4/T5  DSI and preferred direction of every column to moving ON and OFF
+            edges (the openloop_tuning definition, each subtype at its own
+            polarity): the central column's, and the median and spread over
+            the interior columns (t4t5_columns.csv);
      HS     the same peak-response DSI for a sphere rotating in yaw both ways,
             and the decoder's yaw estimate: its gain and the discriminability d'
             of the two rotation directions from single frames;
@@ -31,50 +33,52 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import torch
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 from run_corridor import fly_path, make_corridor, score
-from run_openloop_tuning import compute_metrics, summarize
 
 from flyloop.control import EfferenceCentering, RotationDecoder, calibrate_decoder
 from flyloop.eyes import Eyes, make_eyes
 from flyloop.lptc import LPTCLayer, LPTCParams, LPTCWeights
-from flyloop.metrics import peak_response
 from flyloop.perturb import STAGES, set_noise
+from flyloop.perturb.scoring import edge_movie, edge_scores
 from flyloop.plotting import CATEGORICAL, GRID, INK, SURFACE, style_axes
 from flyloop.runio import apply_sweep, rewrite_index_flag, save_meta, write_run_metadata
 from flyloop.sim import ClosedLoop, KinematicBody, SphereWorld, VisualRig
-from flyloop.stimuli import HexLattice, StimulusSequence, moving_edge
+from flyloop.stimuli import HexLattice
 from flyloop.vision import FlyvisModel
 from flyloop.viz import attach_recorder, name_trial, save_activity
 
 matplotlib.use("Agg")
 
-POLARITIES = ("on", "off")
+INTERIOR_RING = 11   # columns this far from the centre have all their inputs (hexagon: 15)
 
 
-def t4t5_dsi(model: FlyvisModel, cfg) -> pd.DataFrame:
-    """Central-column DSI of each T4/T5 subtype to moving edges, under the
-    model's current noise. One row per subtype (at its expected polarity)."""
+def t4t5_dsi(model: FlyvisModel, cfg) -> tuple[pd.DataFrame, dict]:
+    """DSI and preferred direction of every T4/T5 cell to moving ON and OFF edges,
+    under the model's current noise (flyloop.perturb.scoring.edge_scores).
+    Returns the per-column table and summary scores: the central column's (as
+    openloop_tuning) and the median over interior columns."""
     s = cfg.openloop.edges
-    directions = np.asarray(s.directions_deg, float)
-    lattice = HexLattice(n_sub=s.n_sub)
-    movie = torch.stack([
-        moving_edge(d, pol, s.speed_deg_s, 1.0, 0.5, s.start_deg, s.end_deg, None, s.t_pre,
-                    s.t_post, model.dt, lattice).frames
-        for pol in POLARITIES for d in directions])
-    recorder, model.recorder = model.recorder, None  # 16 stimuli, not the two eyes
-    try:
-        resp = model.simulate(StimulusSequence(movie, model.dt, s.t_pre))
-    finally:
-        model.recorder = recorder
-    window = ((-s.window_deg - s.start_deg) / s.speed_deg_s,
-              (s.window_deg + 2.25 - s.start_deg) / s.speed_deg_s)
-    peaks = peak_response(np.moveaxis(resp.central, 1, -1), resp.time, *window)
-    peaks = peaks.reshape(len(POLARITIES), len(directions), -1)
-    metrics = compute_metrics(peaks, directions, list(POLARITIES), model.cell_types, True)
-    return summarize(metrics, "central")
+    movie, directions = edge_movie(s, model.dt, model.device)
+    columns, _ = edge_scores(model, movie, directions, s.t_pre, paired=False)
+    return columns, tuning_summary(columns)
+
+
+def tuning_summary(columns: pd.DataFrame) -> dict:
+    """Scores of a per-column tuning table: central column, and median and spread
+    over the interior columns, each averaged over the 8 subtypes."""
+    central = columns[columns.ring == 0]
+    inner = columns[columns.ring <= INTERIOR_RING]
+    by = inner.groupby("cell_type")
+    return dict(
+        dsi_t4t5=float(central.dsi.mean()),
+        t4t5_pd_error_deg=float(central.pd_error_deg.abs().mean()),
+        dsi_t4t5_columns=float(by.dsi.median().mean()),
+        dsi_t4t5_columns_sd=float(by.dsi.std().mean()),
+        t4t5_pd_spread_deg=float(by.pd_error_deg.std().mean()),
+        t4t5_pd_error_columns_deg=float(by.pd_error_deg.apply(lambda x: x.abs().median()).mean()),
+    )
 
 
 def hs_openloop(rig: VisualRig, decoder: RotationDecoder, cfg) -> dict:
@@ -111,6 +115,49 @@ def hs_openloop(rig: VisualRig, decoder: RotationDecoder, cfg) -> dict:
                 yaw_estimate_sd_deg_s=float(spread))
 
 
+def calibrate(rig: VisualRig, w: LPTCWeights, eyes, train, cfg) -> tuple[RotationDecoder, float]:
+    """Calibrate as run_corridor does, on the rig as it is (call it unperturbed):
+    the HS yaw decoder on a rotating sphere, its baseline in centred straight
+    flight, and b, the yaw estimate per corridor width of offset."""
+    decoder = RotationDecoder(w, eyes)
+    name_trial(rig.model, "calibration")
+    calibrate_decoder(decoder, rig, lambda: SphereWorld.checkerboard(cfg.openloop.square_deg),
+                      omega_deg_s=cfg.openloop.omega_deg_s, t_settle=cfg.t_settle)
+    skip = int(round(1.0 / rig.dt))
+    straight = {}
+    for y0 in (-0.2, 0.0, 0.2):
+        for x0 in np.arange(3) * cfg.corridor.length / 3:
+            name_trial(rig.model, f"straight y={y0:+.1f}")
+            V, _ = fly_path(rig, train, x0, y0, lambda t: 0.0, cfg.speed, 3.0)
+            straight[(y0, x0)] = V[skip:]
+    decoder.set_baseline(np.concatenate([v for (y, _), v in straight.items() if y == 0]).mean(0))
+    cal = pd.DataFrame([dict(y=y, yaw_estimate=np.mean([decoder(v)[2] for v in V]))
+                        for (y, _), V in straight.items()])
+    return decoder, float(np.polyfit(cal.y, cal.yaw_estimate, 1)[0])
+
+
+def fly_corridor(rig: VisualRig, decoder: RotationDecoder, b: float, world, cfg,
+                 label: dict) -> tuple[list[dict], list[pd.DataFrame]]:
+    """Efference-copy centering from every start in cfg.starts. Returns the
+    scores and time series of each trial, tagged with `label`."""
+    c = cfg.controller
+    limit = 0.5 - cfg.collision_margin
+    scores, series = [], []
+    for y, h in cfg.starts:
+        tr = dict(start_y=y, start_heading=h, **label)
+        ctrl = EfferenceCentering(b, cfg.speed, c.kc, c.kh, heading=c.heading,
+                                  tau_body=cfg.body_tau_s, filter_tau_s=c.filter_tau_s)
+        body = KinematicBody(cfg.body_tau_s, free_axes=("yaw",), forward_speed=cfg.speed)
+        name_trial(rig.model, " ".join(f"{k}={v}" for k, v in tr.items()))
+        df = ClosedLoop(rig, body, decoder, ctrl).run(
+            world, cfg.t_run, t_settle=cfg.t_settle, start_position=[0.0, y, 0.0],
+            start_heading_deg=h, set_baseline=False,
+            stop=lambda bd: abs(bd.position[1]) > limit)
+        scores.append(tr | score(df, cfg, limit))
+        series.append(df.assign(**tr))
+    return scores, series
+
+
 def plot_paths(ts: pd.DataFrame, cfg, limit: float, title: str, path: Path) -> None:
     fig, ax = plt.subplots(figsize=(9, 2.6), facecolor=SURFACE)
     style_axes(ax)
@@ -143,7 +190,9 @@ def main(cfg: DictConfig) -> None:
     out_dir = Path(HydraConfig.get().runtime.output_dir)
     t0 = time.time()
     dt = cfg.dt
-    model = FlyvisModel(cfg.model, dt=dt)
+    # flyvis on its own hexagon through the column network (identical to flyvis,
+    # tests/test_column_network.py), so network perturbations reach it too
+    model = FlyvisModel(cfg.model, dt=dt, columns=HexLattice())
     meta = write_run_metadata(out_dir, cfg, device=str(model.device))
     recorder = attach_recorder(cfg, model)
     eyes = make_eyes(cfg.eyes)
@@ -158,48 +207,22 @@ def main(cfg: DictConfig) -> None:
     sd = {stage: float(cfg.noise[stage]) for stage in STAGES}
 
     # 1. noise-free calibration (as run_corridor)
-    decoder = RotationDecoder(w, eyes)
-    name_trial(model, "calibration")
-    calibrate_decoder(decoder, rig, lambda: SphereWorld.checkerboard(cfg.openloop.square_deg),
-                      omega_deg_s=cfg.openloop.omega_deg_s, t_settle=cfg.t_settle)
-    skip = int(round(1.0 / dt))
-    straight = {}
-    for y0 in (-0.2, 0.0, 0.2):
-        for x0 in np.arange(3) * cfg.corridor.length / 3:
-            name_trial(model, f"straight y={y0:+.1f}")
-            V, _ = fly_path(rig, train, x0, y0, lambda t: 0.0, cfg.speed, 3.0)
-            straight[(y0, x0)] = V[skip:]
-    decoder.set_baseline(np.concatenate([v for (y, _), v in straight.items() if y == 0]).mean(0))
-    cal = pd.DataFrame([dict(y=y, yaw_estimate=np.mean([decoder(v)[2] for v in V]))
-                        for (y, _), V in straight.items()])
-    b = float(np.polyfit(cal.y, cal.yaw_estimate, 1)[0])
+    decoder, b = calibrate(rig, w, eyes, train, cfg)
     print(f"calibrated: b = {b:.1f} deg/s per width ({time.time() - t0:.0f} s)")
 
     # 2. noise on; open-loop scores
     noisy = set_noise(rig, **sd, seed=cfg.seed) is not None
-    tuning = t4t5_dsi(model, cfg)
-    tuning.to_csv(out_dir / "t4t5_dsi.csv", index=False)
-    openloop = dict(dsi_t4t5=float(tuning.dsi.mean()),
-                    t4t5_pd_error_deg=float(tuning.pd_error_deg.abs().mean()),
-                    **hs_openloop(rig, decoder, cfg))
+    columns, tuning = t4t5_dsi(model, cfg)
+    columns.to_csv(out_dir / "t4t5_columns.csv", index=False)
+    openloop = dict(**tuning, **hs_openloop(rig, decoder, cfg))
     print({k: round(v, 3) for k, v in openloop.items()}, f"({time.time() - t0:.0f} s)")
 
     # 3. closed loop: efference-copy centering on the unseen walls
-    c = cfg.controller
     scores, series = [], []
     for rep in range(cfg.noise.repeats if noisy else 1):
-        for y, h in cfg.starts:
-            tr = dict(start_y=y, start_heading=h, repeat=rep)
-            ctrl = EfferenceCentering(b, cfg.speed, c.kc, c.kh, heading=c.heading,
-                                      tau_body=cfg.body_tau_s, filter_tau_s=c.filter_tau_s)
-            body = KinematicBody(cfg.body_tau_s, free_axes=("yaw",), forward_speed=cfg.speed)
-            name_trial(model, f"efference y={y:+.2f} heading={h:+g} repeat={rep}")
-            df = ClosedLoop(rig, body, decoder, ctrl).run(
-                test, cfg.t_run, t_settle=cfg.t_settle, start_position=[0.0, y, 0.0],
-                start_heading_deg=h, set_baseline=False,
-                stop=lambda bd: abs(bd.position[1]) > limit)
-            scores.append(tr | score(df, cfg, limit))
-            series.append(df.assign(**tr))
+        sc, ts = fly_corridor(rig, decoder, b, test, cfg, dict(repeat=rep))
+        scores += sc
+        series += ts
     set_noise(rig)
     scores = pd.DataFrame(scores)
     ts = pd.concat(series, ignore_index=True)

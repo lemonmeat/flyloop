@@ -1,0 +1,4 @@
+[2026-11-17 15:43:13,904][root][INFO] - Initialized network view at C:\Users\andre\Documents\flyvis\data\flyvis\results\flow\0000\000
+[2026-11-17 15:43:14,034][root][WARNING] - epe not in C:\Users\andre\Documents\flyvis\data\flyvis\results\flow\0000\000\validation, but 'loss' is. Falling back to 'loss'. You can rerun the ensemble validation to make appropriate recordings of the losses.
+[2026-11-17 15:43:18,686][flyvis.network.network][INFO] - Initialized network with NumberOfParams(free=734, fixed=2959) parameters.
+[2026-11-17 15:43:18,691][root][INFO] - Recovered network state.

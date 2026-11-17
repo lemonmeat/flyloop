@@ -102,6 +102,22 @@ class FlyvisModel:
     recorder = None
     noise = None
 
+    @property
+    def perturbation(self):
+        """Optional `flyloop.perturb.NetworkPerturbation` acting on the cells of
+        the column network (FPN, dynamic noise, photon noise). Needs `columns`.
+        Its fixed pattern is in the initial state; its dynamic noise is not."""
+        return None if self.engine is None else self.engine.perturbation
+
+    @perturbation.setter
+    def perturbation(self, p) -> None:
+        if self.engine is None:
+            if p is not None:
+                raise ValueError("network perturbations need the column network: "
+                                 "FlyvisModel(columns=...), e.g. columns=HexLattice()")
+            return
+        self.engine.perturbation = p
+
     def __init__(
         self,
         model: str = "flow/0000/000",
@@ -212,6 +228,17 @@ class FlyvisModel:
             raise ValueError(f"unknown initial_state {self.initial_state!r}")
         if self.recorder is not None:
             self.recorder.new_trial()
+        p = self.perturbation
+        if p is None:
+            return self._init_state(batch_size, first_frame)
+        p.reset()
+        p.dynamic = False  # the fixed pattern shapes the initial state, the noise not
+        try:
+            return self._init_state(batch_size, first_frame)
+        finally:
+            p.dynamic = True
+
+    def _init_state(self, batch_size, first_frame):
         n = int(self.t_init / self.dt) if self.t_init and self.t_init > 0 else 0
         if self.initial_state == "none" or n == 0:
             return None
@@ -360,16 +387,29 @@ class FlyvisModel:
         state = self._integrate(frames, state, lambda act: cols.append(act[:, self._layer_t]))
         return torch.stack(cols, 1), state
 
+    def integrate(self, frames, state, readout):
+        """Advance by frames (batch, n_frames, 1, n_columns) from state, calling
+        readout(activity) with the (batch, n_nodes) activity of every frame as it
+        is read out (noise and FPN gain included). Returns the new state."""
+        return self._integrate(frames, state, readout)
+
     def _integrate(self, frames, state, readout):
         frames = torch.as_tensor(frames, dtype=torch.float32, device=self.device)
         self._check_columns(frames)
-        noise = self.noise
-        if noise is None:
+        noise, pert = self.noise, self.perturbation
+        light = None
+        if noise is not None:
+            light = noise.photoreceptors
+        if pert is not None and pert.photon_rate is not None:
+            def light(x, _noise=light):  # photons first, then any added noise
+                x = pert.light(x, self.dt)
+                return x if _noise is None else _noise(x)
+        if light is None:
             x = self._stimulus(frames)
         elif self.engine is not None:  # independent noise in every photoreceptor
-            x = self._stimulus(frames, noise.photoreceptors)
+            x = self._stimulus(frames, light)
         else:
-            frames = noise.photoreceptors(frames)
+            frames = light(frames)
             x = self._stimulus(frames)
         if state is None:
             state = self._initial_state(frames.shape[0])
@@ -378,6 +418,8 @@ class FlyvisModel:
             state = self._next_state(state, x[:, i])
             # T4/T5 noise is added to what is read out, not to the network state
             act = self.activity_of(state)
+            if pert is not None:
+                act = pert.readout(act)
             if noise is not None:
                 act = noise.activity(act)
             readout(act)

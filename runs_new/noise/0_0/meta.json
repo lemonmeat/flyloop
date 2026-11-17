@@ -1,0 +1,31 @@
+{
+  "commit": "0252cebc4565b59fd192ea2b9079e88d8b733694",
+  "dirty": true,
+  "started": "2026-11-17T14:43:19+00:00",
+  "host": "DESKTOP-QA4T56K",
+  "python": "3.10.22",
+  "device": "cuda:0",
+  "noise_sd": {
+    "photoreceptor": 0.0,
+    "t4t5": 0.0,
+    "lptc": 0.0
+  },
+  "b_deg_s_per_width": 53.40940886149843,
+  "dsi_t4t5": 0.5279928581661225,
+  "t4t5_pd_error_deg": 12.364936807758928,
+  "dsi_t4t5_columns": 0.5263706956047705,
+  "dsi_t4t5_columns_sd": 0.030479220085395064,
+  "t4t5_pd_spread_deg": 1.60169673842084,
+  "t4t5_pd_error_columns_deg": 12.703736056329173,
+  "dsi_hs": 1.0,
+  "yaw_gain": 0.999999994255809,
+  "yaw_dprime": 73.32975458559253,
+  "yaw_estimate_sd_deg_s": 2.4546652308231116,
+  "n_trials": 4,
+  "crash_fraction": 0.0,
+  "y_rms": 0.06053180666904662,
+  "y_rms_survivors": 0.06053180666904662,
+  "heading_abs_mean": 5.339855594977926,
+  "yaw_rate_sd": 4.452527070658331,
+  "total_s": 96.8
+}

@@ -33,7 +33,8 @@ world: drum, sphere or corridor; 1/f^alpha textures, gratings, checkerboards
 | `vs_tuning` | VS responses to vertical motion and their preferred rotation axis, compared with a matched-filter prediction from anatomy alone. |
 | `closedloop` | Course and attitude stabilization against a constant torque about yaw, pitch or roll, with T4/T5 intact, T4 only, T5 only or silenced. Also includes controls (grey world, no torque), a 1/f texture world, optomotor following and a controller gain scan. |
 | `corridor` | Corridor centering in forward flight. Compares no steering, optomotor only, a fitted vision-only HS/VS readout, HS plus an efference copy of the fly's own turns (intact and T4/T5 silenced), and saccadic flight: straight segments and fixed turns away from the nearer wall, triggered by the same HS signal. |
-| `noise` | Gaussian noise at the photoreceptors, T4/T5 or HS/VS (one sweep entry per stage and level), scored open loop (T4/T5 and HS direction selectivity) and closed loop (efference-copy corridor centering). |
+| `noise` | Gaussian noise at the photoreceptors, T4/T5 or HS/VS (one sweep entry per stage and level), scored open loop (T4/T5 direction selectivity of every column, HS direction selectivity) and closed loop (efference-copy corridor centering). |
+| `perturb` | Per-cell perturbations inside the network, by layer or cell type: fixed pattern noise (a gain and a resting-potential offset per cell, drawn once per simulated fly) and dynamic noise (white, 1/f flicker, photon shot noise at a given light level). Scored over many flies, open loop (T4/T5 tuning of every cell against the unperturbed fly, how far each layer's activity moves, HS yaw bias and tuning) and closed loop (corridor centering with the unperturbed calibration). See [Variance inside the visual system](#variance-inside-the-visual-system). |
 | `flybody_corridor` | Prototype: the flybody (MuJoCo) fly flown by the same loop, with the photoreceptor input rendered by MuJoCo from the fly's head (`flybody.vision=mujoco`, the default) or ray-cast as in `corridor` (`flybody.vision=analytic`). `controller` picks optomotor, readout, efference or saccade; the last three load the `calibration.npz` of a `corridor` run. The rendering is tested against the analytic corridor; the flight is held up artificially and not validated (see `src/flyloop/sim/flybody_body.py`). |
 
 The first validation from the project plan is covered by a test: a constant yaw
@@ -120,6 +121,9 @@ python tasks.py run corridor corridor.pattern=texture speed=1.0
 python tasks.py run corridor eyes.model=hexagon       # the simplified eye (see below)
 python tasks.py run noise index=3                     # entry 3 of the noise sweep
 python tasks.py run summarize_noise                   # table and figures over runs/noise
+python tasks.py run perturb index=4                   # lamina fixed pattern gain, 6 flies
+python tasks.py run summarize_perturb                 # tables and figures over runs/perturb
+python tasks.py run plot_perturb_tuning runs/perturb/0_0 runs/perturb/14_0   # tuning curves
 python tasks.py run animate_corridor runs/corridor/0_0    # MP4 of a run (--extras video)
 ```
 
@@ -132,7 +136,7 @@ GPU, `closedloop` takes a few minutes and `corridor` about seven.
 The eyes are set in the `eyes` section of `configs/common.yaml`. `eyes.model=ommatidia`
 (the default) is the eye of the connectome, and `eyes.model=hexagon` is flyvis's
 flat lattice of 721 columns, the simplified eye that earlier results used. Both
-run through the same pipeline. `noise` scores direction selectivity with moving
+run through the same pipeline. `noise` and `perturb` score direction selectivity with moving
 edges drawn on the flyvis lattice, so it stays on the hexagon, as does
 `openloop_tuning`.
 
@@ -187,8 +191,11 @@ Settings shared by all experiments (output folder, index, seed) are in
 | `vs_tuning` | `vertical_motion.csv`, `axis_tuning.csv`, `preferred_axes.csv`, `vs_axis_tuning_<source>.png`, `vs_pref_vs_rf.png` |
 | `closedloop` | `scores.csv`, `timeseries.csv`, `calibration.csv`, `closedloop_traces.png`, `compensation.png`, `gain_scan.png` |
 | `corridor` | `scores.csv`, `timeseries.csv`, `readout_r2.csv`, `offset_calibration.csv`, `corridor_paths.png`, `offset_signal.png`, `calibration.npz` (decoder calibration, offset gain and fitted readout; `calibration=<path>` reuses it in `corridor` or `flybody_corridor`, `calibrate_only=true` stops after saving it; `sysid.attitude_deg` and `sysid.height` give each fitting flight a random pitch, roll and height) |
-| `noise` | `scores.csv`, `timeseries.csv`, `t4t5_dsi.csv`, `corridor_paths.png`; open-loop and closed-loop scores in `meta.json` |
+| `noise` | `scores.csv`, `timeseries.csv`, `t4t5_columns.csv` (DSI and preferred direction of every T4/T5 cell), `corridor_paths.png`; open-loop and closed-loop scores in `meta.json` |
 | `summarize_noise` | In `runs/noise`: `summary.csv` (one row per run), `noise_levels.png`, `behaviour_vs_dsi.png` |
+| `perturb` | `flies.csv` (one row per fly: T4/T5 tuning change, activity change per layer, yaw bias, HS scores, crashes), `types.csv` (activity change per cell type), `t4t5_columns.csv`, `t4t5_columns.png`, `type_scales.csv`, `scores.csv`, `timeseries.csv`, `corridor_paths.png` |
+| `summarize_perturb` | In `runs/perturb`: `summary.csv`, `celltypes.csv`, `fpn_layers.png`, `propagation.png`, `celltype_sensitivity.png`, `dynamic.png` |
+| `plot_perturb_tuning` | `tuning_comparison.png`, `tuning_comparison.csv`, `wide_field_tuning.csv`: T4/T5 polar tuning and HS/VS velocity tuning of chosen perturb runs against the unperturbed fly |
 | `flybody_corridor` | `timeseries.csv`, `flybody_corridor.png`, `flybody_corridor.mp4` (chase and top views; below, what both eyes see) |
 | `train_extended` | `network.pt`, `connectome.json`, `extension.json` (the trained extension: `model=<run folder>` in any experiment), `loss.csv`, `validation.csv`, `training.png` |
 | `benchmark_speed` | `benchmark.json`, `benchmark.txt`: wall-clock time per simulated second of flyvis |
@@ -235,7 +242,13 @@ Perturbations are hooks on this single pipeline, never forks of it. For example,
 `flyloop.perturb.set_t4t5_output` blocks T4/T5 output per subtype, as the
 silencing in Leonte et al. (2021) did, and `flyloop.perturb.set_noise` adds Gaussian
 noise at the photoreceptors, at T4/T5 or at HS/VS (SD per frame; calibration in
-the `noise` experiment is always noise-free). The LPTC time constants come from a preset
+the `noise` experiment is always noise-free). These two act on the input and on what is
+read out. `flyloop.perturb.NetworkPerturbation` acts on the cells themselves, inside every
+Euler step of the column network, so its effects propagate through the circuit: fixed
+pattern gain and offset, white and 1/f voltage noise, and photon shot noise
+(`FlyvisModel.perturbation`; `LPTCPerturbation` does the same at the lobula plate).
+It needs the column network, so `noise` and `perturb` run flyvis's own hexagon through
+it (`columns=HexLattice()`, identical to flyvis to within rounding). The LPTC time constants come from a preset
 (`lptc.preset=simple`, 10 ms placeholder values, or `literature`, 3 ms from blowfly
 membrane properties; see `src/flyloop/lptc/model.py`).
 
@@ -396,7 +409,9 @@ src/flyloop/
                 (eyemap.py), the cell types flyvis lacks (extension.py)
   control/      rotation decoder, fitted readout, PD / corridor / efference / saccadic controllers
   sim/          worlds, visual rig, bodies, closed loop
-  perturb/      T4/T5 silencing, noise at photoreceptors, T4/T5 or HS/VS
+  perturb/      T4/T5 silencing, noise at photoreceptors, T4/T5 or HS/VS, per-cell
+                fixed pattern and dynamic noise by layer or cell type (network.py),
+                per-column open-loop scores (scoring.py)
   metrics/      direction selectivity, preferred direction, peak responses
   plotting.py   shared figure style
   viz.py        activity viewer: records photoreceptor input and T4/T5 maps per frame

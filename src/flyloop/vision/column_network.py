@@ -51,6 +51,8 @@ class ColumnNetwork:
         n_nodes, n_edges: Size of the network.
     """
 
+    perturbation = None  # optional flyloop.perturb.NetworkPerturbation
+
     def __init__(self, network, u, v, placement: dict | None = None):
         self.network = network
         self.device = next(network.parameters()).device
@@ -212,7 +214,15 @@ class ColumnNetwork:
     def next_state(self, activity: torch.Tensor, x: torch.Tensor, dt: float) -> torch.Tensor:
         """One Euler step of dt seconds from activity (batch, n_nodes) with input
         x (batch, n_nodes)."""
-        current = torch.sparse.mm(self.weight, torch.relu(activity).T).T
-        velocity = 1 / torch.clamp(self.time_const, min=dt) * (
-            -activity + self.bias + current + x)
-        return activity + velocity * dt
+        p = self.perturbation
+        if p is None:
+            current = torch.sparse.mm(self.weight, torch.relu(activity).T).T
+            velocity = 1 / torch.clamp(self.time_const, min=dt) * (
+                -activity + self.bias + current + x)
+            return activity + velocity * dt
+        # flyloop.perturb.NetworkPerturbation: FPN gain and offset, dynamic noise
+        current = torch.sparse.mm(self.weight, p.output(torch.relu(activity)).T).T
+        a = dt / torch.clamp(self.time_const, min=dt)
+        rest = p.rest(self.bias, activity.shape[0])
+        new = activity + a * (-activity + rest + current + p.drive(x, dt))
+        return p.voltage_noise(new, a)

@@ -1,0 +1,135 @@
+# Per-cell perturbations inside the visual system: fixed pattern noise (gain and
+# offset per cell, drawn once per fly) and dynamic noise (white, 1/f flicker,
+# photon shot noise), by layer or cell type. Scored open loop (T4/T5 tuning of
+# every column, how far each cell type moves, HS yaw bias and tuning) and closed
+# loop (efference-copy corridor centering with the noise-free calibration).
+# Run: python tasks.py run perturb [index=N] [key=value ...]
+# Then: python tasks.py run summarize_perturb
+
+defaults:
+  - common
+  - _self_
+
+sweep: perturb
+
+model: flow/0000/000
+dt: 0.01
+
+eyes:
+  model: hexagon       # the open-loop score uses moving edges drawn on the flyvis lattice
+
+lptc:
+  source: connectome
+  preset: simple
+  tau_lptc: null
+  tau_lpi: null
+
+perturb:               # see flyloop.perturb.network
+  targets: []          # layers (photoreceptor, lamina, medulla, lobula, t4t5), lp (T4/T5 ->
+                       # HS/VS synapses and HS/VS cells), all (every layer and lp), or cell types
+  per_type: false      # true: perturb each cell type of `targets` on its own, in turn
+  gain: 0.0            # FPN: gain ~ U(1 - gain, 1 + gain) on what each cell transmits
+  offset: 0.0          # FPN: resting-potential offset ~ N(0, offset x the type's response SD)
+  white: 0.0           # dynamic: white voltage noise, SD = white x the type's response SD
+  flicker: 0.0         # dynamic: 1/f current noise (5 ms - 5 s), SD = flicker x response SD
+  photon_rate: null    # dynamic: photons/s per photoreceptor at luminance 1 (shot noise)
+  granularity: cell    # cell: one FPN value per neuron (one for all CT1 nodes); node: per node
+  flies: 6             # FPN patterns (fpn_seed 0 .. flies-1); dynamic noise seeds follow
+  repeats: 1           # closed-loop trials per start and fly (more for dynamic noise)
+  closedloop: true
+  hs_openloop: true    # HS DSI, yaw gain and d' (rotating sphere); costs ~5 s per fly
+  rebaseline: false    # true: the decoder's zero is re-measured on each fly (adaptation)
+
+corridor:              # as configs/noise.yaml
+  pattern: checker
+  square: 0.1
+  alpha: 1.0
+  contrast: 1.0
+  length: 8.0
+  train_seed: 0
+  test_seed: 1
+
+speed: 0.5
+body_tau_s: 0.05
+collision_margin: 0.03
+
+controller: {kc: 150.0, kh: 3.0, heading: visual, filter_tau_s: 0.5}  # EfferenceCentering
+
+starts:
+  - [0.25, 0.0]
+  - [-0.25, 0.0]
+  - [0.0, 30.0]
+  - [0.0, -30.0]
+t_run: 12.0
+t_settle: 1.0
+t_score: 4.0
+
+openloop:
+  omega_deg_s: 90.0
+  t_move: 1.5
+  square_deg: 20.0
+  t_bias: 2.0          # s of centred straight flight for the yaw bias (the first 1 s skipped)
+  edges:
+    directions_deg: [0, 45, 90, 135, 180, 225, 270, 315]
+    speed_deg_s: 110.2
+    start_deg: -100.0
+    end_deg: 100.0
+    t_pre: 1.0
+    t_post: 0.5
+    n_sub: 5
+    window_deg: 22.5
+
+# Index 0 is the unperturbed reference. 1-28: FPN gain and offset per layer, closed
+# loop. 29-31: each cell type on its own, open loop only. 32-: dynamic noise.
+sweep_list:
+  - {perturb: {targets: [], flies: 1}}
+  - {perturb: {targets: [photoreceptor], gain: 0.25}}
+  - {perturb: {targets: [photoreceptor], gain: 0.5}}
+  - {perturb: {targets: [lamina], gain: 0.25}}
+  - {perturb: {targets: [lamina], gain: 0.5}}
+  - {perturb: {targets: [medulla], gain: 0.25}}
+  - {perturb: {targets: [medulla], gain: 0.5}}
+  - {perturb: {targets: [lobula], gain: 0.25}}
+  - {perturb: {targets: [lobula], gain: 0.5}}
+  - {perturb: {targets: [t4t5], gain: 0.25}}
+  - {perturb: {targets: [t4t5], gain: 0.5}}
+  - {perturb: {targets: [lp], gain: 0.25}}
+  - {perturb: {targets: [lp], gain: 0.5}}
+  - {perturb: {targets: [all], gain: 0.25}}
+  - {perturb: {targets: [all], gain: 0.5}}
+  - {perturb: {targets: [photoreceptor], offset: 0.5}}
+  - {perturb: {targets: [photoreceptor], offset: 1.0}}
+  - {perturb: {targets: [lamina], offset: 0.5}}
+  - {perturb: {targets: [lamina], offset: 1.0}}
+  - {perturb: {targets: [medulla], offset: 0.5}}
+  - {perturb: {targets: [medulla], offset: 1.0}}
+  - {perturb: {targets: [lobula], offset: 0.5}}
+  - {perturb: {targets: [lobula], offset: 1.0}}
+  - {perturb: {targets: [t4t5], offset: 0.5}}
+  - {perturb: {targets: [t4t5], offset: 1.0}}
+  - {perturb: {targets: [lp], offset: 0.5}}
+  - {perturb: {targets: [lp], offset: 1.0}}
+  - {perturb: {targets: [all], offset: 0.5}}
+  - {perturb: {targets: [all], offset: 1.0}}
+  - {perturb: {targets: [all], per_type: true, gain: 0.5, flies: 5, closedloop: false, hs_openloop: false}}
+  - {perturb: {targets: [all], per_type: true, gain: 0.5, flies: 5, closedloop: false, hs_openloop: false, granularity: node}}
+  - {perturb: {targets: [all], per_type: true, offset: 1.0, flies: 5, closedloop: false, hs_openloop: false}}
+  - {perturb: {targets: [photoreceptor], white: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {targets: [lamina], white: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {targets: [medulla], white: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {targets: [lobula], white: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {targets: [t4t5], white: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {targets: [all], white: 0.25, flies: 3, repeats: 2}}
+  - {perturb: {targets: [all], white: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {targets: [photoreceptor], flicker: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {targets: [lamina], flicker: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {targets: [medulla], flicker: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {targets: [lobula], flicker: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {targets: [t4t5], flicker: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {targets: [all], flicker: 0.25, flies: 3, repeats: 2}}
+  - {perturb: {targets: [all], flicker: 0.5, flies: 3, repeats: 2}}
+  - {perturb: {photon_rate: 1.0e+6, flies: 3, repeats: 2}}
+  - {perturb: {photon_rate: 1.0e+5, flies: 3, repeats: 2}}
+  - {perturb: {photon_rate: 1.0e+4, flies: 3, repeats: 2}}
+  - {perturb: {photon_rate: 1.0e+3, flies: 3, repeats: 2}}
+  - {perturb: {photon_rate: 3.0e+2, flies: 3, repeats: 2}}

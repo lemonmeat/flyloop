@@ -104,6 +104,9 @@ class LPTCLayer:
         self.subtype_gain = torch.ones(8, device=self.w_exc.device)
         # optional flyloop.perturb.Noise: noise on the returned HS/VS voltages
         self.noise = None
+        # optional flyloop.perturb.LPTCPerturbation: fixed pattern noise of the
+        # T4/T5 -> lobula plate synapses and the HS/VS cells
+        self.perturbation = None
 
     @property
     def cells(self) -> list[str]:
@@ -133,8 +136,13 @@ class LPTCLayer:
         for i in range(t4t5.shape[1]):
             r = torch.relu(t4t5[:, i]) * self.subtype_gain[None, :, None]
             r = r.flatten(1)
+            fpn = self.perturbation
+            if fpn is not None:
+                r = fpn.inputs(r)
             lpi = lpi + a_lpi * (-lpi + p.g_lpi * r @ self.w_lpi_in.T)
             drive = p.g_exc * r @ self.w_exc.T + p.g_inh * torch.relu(lpi) @ self.w_lpi_out.T
+            if fpn is not None:
+                drive = fpn.target(drive)
             v = v + a_v * (-v + drive)
             out.append(v if self.noise is None else self.noise.lptc(v))
         return torch.stack(out, 1), {"v": v, "lpi": lpi}
